@@ -33,7 +33,7 @@ ID_TO_COLOR_NAME = {
 BAND_CLASS_IDS = {1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12}
 
 # Class IDs for tolerance bands
-TOLERANCE_CLASS_IDS = {1}  # Only gold for now (silver support pending)
+TOLERANCE_CLASS_IDS = {1}  # Gold only; silver has no segmentation class ID in current model
 
 # =============================================================================
 # Color to Digit Value Mapping
@@ -226,4 +226,4 @@ def is_valid_digit_color(color_name: str) -> bool:
 
 def is_tolerance_color(color_name: str) -> bool:
     """Check if a color is a tolerance indicator."""
-    return color_name.lower() in {"gold"}  # Silver support pending
+    return color_name.lower() in {"gold", "silver"}

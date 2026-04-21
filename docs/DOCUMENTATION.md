@@ -285,49 +285,45 @@ def calculate_resistance(mask: np.ndarray) -> Union[ResistanceResult, Calculatio
 ```python
 def determine_reading_direction(sorted_bands: List[BandInfo]) -> str:
     """
-    Gold tolerance band should be LAST when reading correctly.
+    Determine correct reading direction using a gated heuristic cascade.
 
     Returns:
-        "forward"  - Bands are in correct order
-        "reverse"  - Need to reverse the order
-        "error"    - No gold band found
+        "forward"                 - Bands are in correct order
+        "reverse"                 - Need to reverse the order
+        "error_unknown_direction" - Direction could not be determined
+        "error_black_edge"        - Black band at a boundary (segmentation artifact)
     """
 ```
 
 Decision tree:
 ```
-Is last band gold? ─────Yes───▶ "forward" ✓
+Gold/silver at last end? ──Yes──▶ "forward" ✓
         │
         No
         ▼
-Is first band gold? ────Yes───▶ "reverse" (flip order)
+Gold/silver at first end? ─Yes──▶ "reverse" (flip order)
         │
         No
         ▼
-Is gold anywhere? ──────Yes───▶ Apply secondary heuristics
+Gold/silver at both ends? ─Yes──▶ "forward" (treat as correct)
         │
-        No
+        No (no tolerance color at an edge)
         ▼
-    "error" (no gold band)
+Gap heuristic: end-gap > 1.5 × median interior gap?
+        │
+    Yes (one end) ──────────────▶ direction from larger end-gap
+        │
+    No (ambiguous)
+        ▼
+Apply secondary heuristics
+        │
+        ▼
+    "error_unknown_direction"
 ```
 
-**Secondary Heuristics** (when gold position is ambiguous):
+**Secondary Heuristics** (when gap heuristic is ambiguous):
 1. Black-edge check: If black appears at either end of the sorted band sequence, return the `BLACK_BOUNDARY_BAND` error — black is invalid as the first significant digit (leading zero) and is not a valid tolerance color (valid tolerance colors: gold, silver, brown, red, green, blue, violet, grey). Reversing does not fix either case, so black at a boundary is treated as a segmentation artifact.
 2. Band-width ratio: If the first band is significantly thinner than the last (<70% of last's width), reverse the sequence — tolerance bands tend to be thinner than digit bands.
-
-**Potential Improvement — Tolerance-Gap Heuristic** (not yet implemented):
-
-On physical resistors, the tolerance band is deliberately spaced further from the nearest digit band than digit bands are from each other. Since PCA projections already provide each band's position along the resistor axis, the gap between consecutive bands is trivially computable. The heuristic would compare the first inter-band gap with the last:
-
-```
-gaps:  |--g1--|--g2--|--g3--|
-bands: [B1]  [B2]  [B3]  [B4]
-
-If g1 > g3 → tolerance is on the left  → reverse
-If g3 > g1 → tolerance is on the right → forward
-```
-
-This geometric cue is independent of color and band width, making it more robust than the width-ratio heuristic, particularly for precision 5-band resistors where all bands have similar widths.
 
 **Calculation Formulas**:
 
@@ -707,7 +703,7 @@ The projection value is a scalar representing position along the axis. Sorting b
 | Error | Cause | Recovery |
 |-------|-------|----------|
 | `INSUFFICIENT_BANDS` | < 3 bands detected | Improve image quality |
-| `NO_TOLERANCE_BAND` | No gold band found | Silver not supported yet |
+| `UNKNOWN_DIRECTION` | No gold/silver at an edge and gap heuristic was ambiguous | Retry with a clearer image; ensure the tolerance band is visible |
 | `BLACK_BOUNDARY_BAND` | Black band at first or last position (invalid as leading digit and as tolerance color) | Segmentation artifact — retry with better image |
 | `INVALID_COLOR` | Color not in lookup table | Check segmentation output |
 

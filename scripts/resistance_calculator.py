@@ -6,6 +6,7 @@ mask into a resistance value.
 """
 
 import numpy as np
+from statistics import median
 from typing import List, Union, Optional
 
 from color_code_tables import (
@@ -18,7 +19,7 @@ from color_code_tables import (
     DEFAULT_TOLERANCE,
     format_resistance
 )
-from band_extractor import extract_color_bands, filter_bands_by_area, extract_color_bands_with_visualization
+from band_extractor import extract_color_bands, filter_bands_by_area, extract_color_bands_with_visualization, compute_pca_axis, project_perpendicular
 from axis_detector import sort_bands_by_position
 
 
@@ -59,10 +60,10 @@ def calculate_resistance(mask: np.ndarray) -> Union[ResistanceResult, Calculatio
     # Step 3: Determine reading direction
     reading_direction = determine_reading_direction(sorted_bands)
 
-    if reading_direction == "error_no_gold":
+    if reading_direction == "error_unknown_direction":
         return CalculationError(
-            error_type="NO_TOLERANCE_BAND",
-            message="No gold tolerance band found. Silver tolerance not yet supported.",
+            error_type="UNKNOWN_DIRECTION",
+            message="Could not determine reading direction: no gold/silver at an end and gap heuristic was ambiguous.",
             detected_bands=sorted_bands
         )
 
@@ -130,10 +131,10 @@ def calculate_resistance_with_axis_info(mask: np.ndarray) -> tuple:
     # Determine reading direction
     reading_direction = determine_reading_direction(sorted_bands)
 
-    if reading_direction == "error_no_gold":
+    if reading_direction == "error_unknown_direction":
         return CalculationError(
-            error_type="NO_TOLERANCE_BAND",
-            message="No gold tolerance band found. Silver tolerance not yet supported.",
+            error_type="UNKNOWN_DIRECTION",
+            message="Could not determine reading direction: no gold/silver at an end and gap heuristic was ambiguous.",
             detected_bands=sorted_bands
         ), axis_info
 
@@ -166,46 +167,108 @@ def calculate_resistance_with_axis_info(mask: np.ndarray) -> tuple:
     return result, axis_info
 
 
+GAP_RATIO_THRESHOLD = 1.5
+
+
+def detect_tolerance_side_by_gap(
+    sorted_bands: List[BandInfo],
+    band_projections: List[float],
+    ratio_threshold: float = GAP_RATIO_THRESHOLD,
+) -> str:
+    """
+    Detect reading direction by inter-band spacing.
+
+    The tolerance band on a standard resistor is printed with a visibly
+    wider gap from the nearest digit/multiplier band than the inter-digit
+    gaps. We compare the gap at each end to the median of the interior
+    gaps and return the direction that puts the larger end-gap last.
+
+    Returns:
+        "forward"   - larger gap is at the last-band end
+        "reverse"   - larger gap is at the first-band end
+        "ambiguous" - no gap exceeds ratio_threshold * median_interior_gap
+    """
+    projs = sorted(band_projections)
+    gaps = [projs[i + 1] - projs[i] for i in range(len(projs) - 1)]
+
+    if len(gaps) < 3:
+        return "ambiguous"
+
+    first_gap = gaps[0]
+    last_gap = gaps[-1]
+    interior = gaps[1:-1]
+    med_interior = median(interior)
+
+    if med_interior == 0:
+        return "ambiguous"
+
+    first_qualifies = first_gap >= ratio_threshold * med_interior
+    last_qualifies = last_gap >= ratio_threshold * med_interior
+
+    if last_qualifies and not first_qualifies:
+        return "forward"
+    if first_qualifies and not last_qualifies:
+        return "reverse"
+    if last_qualifies and first_qualifies:
+        return "forward" if last_gap >= first_gap else "reverse"
+    return "ambiguous"
+
+
+def _compute_band_projections(sorted_bands: List[BandInfo]) -> List[float]:
+    """Recompute axis projections from band centroids via PCA."""
+    centroids = np.array([b.centroid for b in sorted_bands])
+    axis_vector, axis_origin = compute_pca_axis(centroids, debug=False)
+    return [
+        float(project_perpendicular(b.centroid, axis_vector, axis_origin))
+        for b in sorted_bands
+    ]
+
+
 def determine_reading_direction(sorted_bands: List[BandInfo]) -> str:
     """
-    Determine correct reading direction by locating the gold tolerance band.
+    Determine correct reading direction.
 
-    The gold tolerance band should be LAST when reading correctly.
-    If gold is at position 0, we need to reverse the order.
+    Priority 1: Gold or silver at an edge → color-based decision.
+    Priority 2: Gold/silver interior or absent → gap heuristic.
+    Priority 2b: Gap ambiguous → secondary heuristics (black-edge, width-ratio).
+    Priority 3: All exhausted → error_unknown_direction.
 
     Args:
         sorted_bands: Bands sorted by position along axis
 
     Returns:
-        "forward"          - bands are in correct order
-        "reverse"          - bands need to be reversed
-        "error_no_gold"    - no gold tolerance band found
-        "error_black_edge" - black band at a boundary (segmentation artifact)
+        "forward"                 - bands are in correct order
+        "reverse"                 - bands need to be reversed
+        "error_unknown_direction" - direction could not be determined
+        "error_black_edge"        - black band at a boundary (segmentation artifact)
     """
     if not sorted_bands:
-        return "error_no_gold"
+        return "error_unknown_direction"
 
-    first_band = sorted_bands[0]
-    last_band = sorted_bands[-1]
+    first_color = sorted_bands[0].color_name.lower()
+    last_color = sorted_bands[-1].color_name.lower()
 
-    first_is_gold = first_band.color_name.lower() == "gold"
-    last_is_gold = last_band.color_name.lower() == "gold"
+    first_is_tol = first_color in {"gold", "silver"}
+    last_is_tol = last_color in {"gold", "silver"}
 
-    if last_is_gold and not first_is_gold:
+    # Priority 1: tolerance color at an edge
+    if last_is_tol and not first_is_tol:
         return "forward"
-    elif first_is_gold and not last_is_gold:
+    if first_is_tol and not last_is_tol:
         return "reverse"
-    elif first_is_gold and last_is_gold:
-        # Both ends are gold - unusual, but treat as forward
+    if first_is_tol and last_is_tol:
+        # Both ends are tolerance colors — unusual; treat as forward
         return "forward"
-    else:
-        # No gold band found - check if any band is gold
-        has_gold = any(b.color_name.lower() == "gold" for b in sorted_bands)
-        if has_gold:
-            # Gold is in the middle - use secondary heuristics
-            return apply_secondary_heuristics(sorted_bands)
-        else:
-            return "error_no_gold"
+
+    # Priority 2: no tolerance color at either edge — try gap heuristic
+    if len(sorted_bands) >= 2:
+        projections = _compute_band_projections(sorted_bands)
+        gap_result = detect_tolerance_side_by_gap(sorted_bands, projections)
+        if gap_result != "ambiguous":
+            return gap_result
+
+    # Priority 2b: gap ambiguous — secondary heuristics
+    return apply_secondary_heuristics(sorted_bands)
 
 
 def apply_secondary_heuristics(bands: List[BandInfo]) -> str:
