@@ -297,24 +297,21 @@ def determine_reading_direction(sorted_bands: List[BandInfo]) -> str:
 
 Decision tree:
 ```
-Gold AND silver both present?  ──Yes──▶ "error_mixed_tolerance_colors"
-        │                               (a resistor has exactly one
-        │                               tolerance color — flagged as
-        │                               segmentation artifact)
-        No
+Count of gold/silver bands:
+  > 2?                          ─Yes─▶ "error_multiple_tolerance_bands"
+  = 2 and NOT adjacent at an    ─Yes─▶ "error_multiple_tolerance_bands"
+    end (positions [0,1] or            (physically impossible —
+    [N-2, N-1])?                        flagged as segmentation artifact)
+  otherwise (0, 1, or 2 at one end)
+        │
         ▼
-Gold/silver at last end only?  ──Yes──▶ "forward" ✓
+Last band is gold/silver?      ─Yes──▶ "forward" ✓
         │
         No
         ▼
-Gold/silver at first end only? ─Yes──▶ "reverse" (flip order)
+First band is gold/silver?     ─Yes──▶ "reverse" (flip order)
         │
         No
-        ▼
-Gold/silver at both ends?      ─Yes──▶ "error_both_ends_tolerance"
-        │                               (physically impossible —
-        │                               flagged as segmentation artifact)
-        No (no tolerance color at an edge, or both ends non-tolerance)
         ▼
 Gap heuristic (requires ≥4 bands):
 end-gap ≥ 1.5 × median interior gap?
@@ -323,15 +320,17 @@ end-gap ≥ 1.5 × median interior gap?
         │
     No (ambiguous, or <4 bands)
         ▼
-Apply secondary heuristics (Table 4 orders 2–3):
+Apply secondary heuristics:
   black-edge → "error_black_edge" (short-circuits)
-  width-ratio → "reverse" if first <70% of last
   else → "forward"
 ```
 
+**Note on Priority 0:** Gold (×0.1) and silver (×0.01) are valid multipliers in addition to being valid tolerance colors. A sub-ohm resistor legally has two gold/silver bands adjacent at one end (Mult + Tol, e.g. `[brown, grey, gold, gold]` = 1.8 Ω ±5%). The check only rejects arrangements that cannot correspond to a real resistor.
+
 **Secondary Heuristics** (when gap heuristic is ambiguous):
 1. Black-edge check: If black appears at either end of the sorted band sequence, return the `BLACK_BOUNDARY_BAND` error — black is invalid as the first significant digit (leading zero) and is not a valid tolerance color (valid tolerance colors: gold, silver, brown, red, green, blue, violet, grey). Reversing does not fix either case, so black at a boundary is treated as a segmentation artifact.
-2. Band-width ratio: If the first band is significantly thinner than the last (<70% of last's width), reverse the sequence — tolerance bands tend to be thinner than digit bands.
+
+(A prior band-width ratio heuristic was removed because tolerance bands are not reliably thinner than digit bands in real-world segmentations.)
 
 **Calculation Formulas**:
 
@@ -713,8 +712,7 @@ The projection value is a scalar representing position along the axis. Sorting b
 | `INSUFFICIENT_BANDS` | < 3 bands detected | Improve image quality |
 | `UNKNOWN_DIRECTION` | No gold/silver at an edge and gap heuristic was ambiguous | Retry with a clearer image; ensure the tolerance band is visible |
 | `BLACK_BOUNDARY_BAND` | Black band at first or last position (invalid as leading digit and as tolerance color) | Segmentation artifact — retry with better image |
-| `BOTH_ENDS_TOLERANCE` | Tolerance colors (gold/silver) at both ends — physically impossible on a real resistor | Segmentation artifact — retry with better image |
-| `MIXED_TOLERANCE_COLORS` | Both gold and silver present anywhere in the segmentation — a resistor has exactly one tolerance color | Segmentation artifact — retry with better image |
+| `MULTIPLE_TOLERANCE_BANDS` | More than one gold/silver band in an impossible arrangement — count > 2, or count == 2 but not adjacent at one end (gold/silver as Mult + Tol is legal for sub-ohm resistors) | Segmentation artifact — retry with better image |
 | `INVALID_COLOR` | Color not in lookup table | Check segmentation output |
 
 ### Validation

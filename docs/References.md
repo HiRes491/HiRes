@@ -46,22 +46,21 @@ planned improvements.
 | # | Parameter | Value | Module | Purpose |
 |---|-----------|-------|--------|---------|
 | 7 | `GAP_RATIO_THRESHOLD` | 1.5 | `resistance_calculator` | Multiple of median interior gap required to flag an end as the tolerance side |
-| 8 | Width ratio threshold | 0.7 | `resistance_calculator` | First band width < 70% of last ⇒ suspect reversed |
 
 ### Validation
 
 | # | Parameter | Value | Module | Purpose |
 |---|-----------|-------|--------|---------|
-| 9 | `DEFAULT_TOLERANCE` | 20.0% | `color_code_tables` | Assumed tolerance when no tolerance band visible |
-| 10 | E24 mismatch threshold | 0.1 (10%) | `resistance_calculator` | Relative distance from nearest E24 value to flag warning |
-| 11 | Min reasonable value | 0.1 Ω | `resistance_calculator` | Lower bound for sanity check |
-| 12 | Max reasonable value | 100 MΩ | `resistance_calculator` | Upper bound for sanity check |
+| 8 | `DEFAULT_TOLERANCE` | 20.0% | `color_code_tables` | Assumed tolerance when no tolerance band visible |
+| 9 | E24 mismatch threshold | 0.1 (10%) | `resistance_calculator` | Relative distance from nearest E24 value to flag warning |
+| 10 | Min reasonable value | 0.1 Ω | `resistance_calculator` | Lower bound for sanity check |
+| 11 | Max reasonable value | 100 MΩ | `resistance_calculator` | Upper bound for sanity check |
 
 ### Preprocessing
 
 | # | Parameter | Value | Module | Purpose |
 |---|-----------|-------|--------|---------|
-| 13 | `img_size` | 256×256 | `run_inference` | Input image resolution to model |
+| 12 | `img_size` | 256×256 | `run_inference` | Input image resolution to model |
 
 ---
 
@@ -69,27 +68,29 @@ planned improvements.
 
 | Priority | Condition | Result |
 |----------|-----------|--------|
-| 0  | Gold AND silver both present anywhere in the sequence | `error_mixed_tolerance_colors` (a resistor has exactly one tolerance color — flagged as segmentation artifact) |
-| 1a | Gold or silver is the last band (and not first) | `forward` |
-| 1b | Gold or silver is the first band (and not last) | `reverse` |
-| 1c | Gold or silver at both ends | `error_both_ends_tolerance` (physically impossible — flagged as segmentation artifact) |
-| 2  | Gold/silver interior or absent | → proceed to gap heuristic (2a) |
+| 0  | Gold/silver count > 2, OR count == 2 but not adjacent at one end (i.e. not at positions [0,1] nor at [N-2, N-1]) | `error_multiple_tolerance_bands` (flagged as segmentation artifact) |
+| 1a | Last band is gold or silver | `forward` |
+| 1b | First band is gold or silver | `reverse` |
+| 2  | No gold/silver at either edge (and count ≤ 1 by Priority 0) | → proceed to gap heuristic (2a) |
 | 2a | → gap heuristic (Table 4, order 1) non-ambiguous | use returned direction |
-| 2b | → gap heuristic ambiguous | → proceed to secondary heuristics (Table 4, orders 2–3) |
-| 3  | All heuristics exhausted (default branch of order 3) | `forward` (best-effort default) |
+| 2b | → gap heuristic ambiguous | → proceed to secondary heuristics (Table 4, order 2 + default) |
+| 3  | All heuristics exhausted (default branch) | `forward` (best-effort default) |
+
+**Note on Priority 0:** Gold and silver are dual-purpose colors — both valid tolerance colors AND valid multipliers (gold ×0.1, silver ×0.01). A sub-ohm resistor legally has gold/silver at BOTH the multiplier position (N-2) and the tolerance position (N-1): e.g. `[brown, grey, gold(×0.1), gold(±5%)]` = 1.8 Ω ±5%. Priority 0 therefore permits `count == 2` when the two tolerance-colored bands are the last two positions (or the first two, if the sequence is reversed), and only flags other arrangements as impossible.
 
 ---
 
 ## Table 4 — Secondary Direction Heuristics
 
-Order 1 is the primary heuristic, triggered by Priority 2 in Table 3 (no gold/silver at an edge). Orders 2–3 are fallbacks, triggered by Priority 2b when the gap heuristic is ambiguous. **The orders are evaluated in sequence; each order that returns a direction or error short-circuits the chain — later orders are not considered.**
+Order 1 is the primary heuristic, triggered by Priority 2 in Table 3 (no gold/silver at an edge). Order 2 is the fallback, triggered by Priority 2b when the gap heuristic is ambiguous. **The orders are evaluated in sequence; each order that returns a direction or error short-circuits the chain.**
 
 | Order | Heuristic | Rationale |
 |-------|-----------|-----------|
-| 1 | **Tolerance-gap:** Compare each end gap against `GAP_RATIO_THRESHOLD` × median interior gap (using PCA projections). If the last gap qualifies and the first does not, return `forward`; if the first qualifies and the last does not, return `reverse`; if neither qualifies, return `ambiguous` and fall to order 2. **Requires ≥4 bands** (i.e. ≥3 inter-band gaps, so that at least one interior gap exists to compute a median). With fewer than 4 bands this heuristic returns `ambiguous` unconditionally. | On physical resistors the tolerance band is deliberately spaced further from the nearest digit band than digit bands are from each other. This geometric cue is independent of color and band width, making it more robust than the width-ratio heuristic for precision 5-band resistors. |
-| 2 | **Black-edge check:** If black appears at either end of the sequence, return the `BLACK_BOUNDARY_BAND` error (short-circuits orders 3 and Default). | Black encodes digit 0 (invalid as the first significant digit) and is not a valid tolerance color (cannot be the last band). Reversing does not resolve either case, so black at a boundary is flagged as a segmentation artifact rather than a direction signal. **Ordered before order 3** because a black edge is an unambiguous signal of malformed input: continuing to a direction-flipping heuristic in that state risks producing a confidently-wrong reading, whereas failing fast gives the caller an explicit error to handle. |
-| 3 | **Band-width ratio:** If the first band's bounding-box width is less than 70% of the last band's width, return `reverse`. | Tolerance bands are physically thinner than digit bands. A narrow first band suggests it is the tolerance band, indicating a reversed sequence. |
-| — | *Default* | If none of the orders above trigger, return `forward`. |
+| 1 | **Tolerance-gap:** Compare each end gap against `GAP_RATIO_THRESHOLD` × median interior gap (using PCA projections). If the last gap qualifies and the first does not, return `forward`; if the first qualifies and the last does not, return `reverse`; if neither qualifies, return `ambiguous` and fall to order 2. **Requires ≥4 bands** (i.e. ≥3 inter-band gaps, so that at least one interior gap exists to compute a median). With fewer than 4 bands this heuristic returns `ambiguous` unconditionally. | On physical resistors the tolerance band is deliberately spaced further from the nearest digit band than digit bands are from each other. This geometric cue is independent of color and band width, making it more robust than purely color-based heuristics. |
+| 2 | **Black-edge check:** If black appears at either end of the sequence, return the `BLACK_BOUNDARY_BAND` error. | Black encodes digit 0 (invalid as the first significant digit) and is not a valid tolerance color (cannot be the last band). Reversing does not resolve either case, so black at a boundary is flagged as a segmentation artifact rather than a direction signal. |
+| — | *Default* | If no order triggers, return `forward`. |
+
+**Removed:** A prior *band-width ratio* heuristic (return `reverse` if the first band's bounding-box width was < 70 % of the last band's) was dropped because tolerance bands are not reliably thinner than digit bands in real-world segmentations, and the heuristic produced wrong directions more often than right ones.
 
 ---
 
@@ -102,9 +103,8 @@ Order 1 is the primary heuristic, triggered by Priority 2 in Table 3 (no gold/si
 | 3 | Single-resistor assumption | The extraction stage assumes all detected band regions belong to a single resistor. | If the mask contains bands from a second resistor or band-like background clutter, spurious bands contaminate the sequence. |
 | 4 | No confidence propagation | The extraction stage does not propagate per-pixel softmax confidence from the segmentation model. | Low-confidence pixels are treated identically to high-confidence ones during majority voting and area counting. |
 | 5 | Resolution dependence | Area and distance thresholds are tuned for 256×256 input crops and do not scale with image size. | Running on higher- or lower-resolution crops without re-tuning parameters may degrade extraction accuracy. |
-| 6 | Width-ratio heuristic fragility | The band-width ratio heuristic (Table 4, order 3) compares bounding-box widths of the first and last bands using a fixed 0.7 ratio. | Bands with similar widths (e.g., precision 5-band resistors) receive no useful signal from this heuristic. |
-| 7 | No recovery from black-edge artifacts | When black is detected at either boundary of the sequence, the pipeline returns `BLACK_BOUNDARY_BAND` (Table 4, order 2) because neither reading direction is valid. | Images where segmentation places a spurious black region at the resistor's edge produce no reading. A future improvement could attempt to drop the offending edge region and re-decode rather than failing outright. |
-| 8 | No SMD resistor support | The pipeline is designed for through-hole axial resistors with color bands. Surface-mount resistors use numeric codes, not colors. | SMD components in the input image cannot be decoded. |
+| 6 | No recovery from black-edge artifacts | When black is detected at either boundary of the sequence, the pipeline returns `BLACK_BOUNDARY_BAND` (Table 4, order 2) because neither reading direction is valid. | Images where segmentation places a spurious black region at the resistor's edge produce no reading. A future improvement could attempt to drop the offending edge region and re-decode rather than failing outright. |
+| 7 | No SMD resistor support | The pipeline is designed for through-hole axial resistors with color bands. Surface-mount resistors use numeric codes, not colors. | SMD components in the input image cannot be decoded. |
 
 ---
 

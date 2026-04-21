@@ -78,24 +78,13 @@ def calculate_resistance(mask: np.ndarray) -> Union[ResistanceResult, Calculatio
             detected_bands=sorted_bands
         )
 
-    if reading_direction == "error_both_ends_tolerance":
+    if reading_direction == "error_multiple_tolerance_bands":
         return CalculationError(
-            error_type="BOTH_ENDS_TOLERANCE",
+            error_type="MULTIPLE_TOLERANCE_BANDS",
             message=(
-                "Tolerance colors (gold/silver) detected at both ends of the "
-                "band sequence. A physical resistor has exactly one tolerance "
-                "band; this indicates a segmentation artifact."
-            ),
-            detected_bands=sorted_bands
-        )
-
-    if reading_direction == "error_mixed_tolerance_colors":
-        return CalculationError(
-            error_type="MIXED_TOLERANCE_COLORS",
-            message=(
-                "Both gold and silver detected in the same segmentation. A "
-                "physical resistor has exactly one tolerance color; this "
-                "indicates a segmentation artifact."
+                "More than one tolerance band (gold/silver) detected. A "
+                "physical resistor has exactly one tolerance band; multiple "
+                "detections indicate a segmentation artifact."
             ),
             detected_bands=sorted_bands
         )
@@ -171,24 +160,13 @@ def calculate_resistance_with_axis_info(mask: np.ndarray) -> tuple:
             detected_bands=sorted_bands
         ), axis_info
 
-    if reading_direction == "error_both_ends_tolerance":
+    if reading_direction == "error_multiple_tolerance_bands":
         return CalculationError(
-            error_type="BOTH_ENDS_TOLERANCE",
+            error_type="MULTIPLE_TOLERANCE_BANDS",
             message=(
-                "Tolerance colors (gold/silver) detected at both ends of the "
-                "band sequence. A physical resistor has exactly one tolerance "
-                "band; this indicates a segmentation artifact."
-            ),
-            detected_bands=sorted_bands
-        ), axis_info
-
-    if reading_direction == "error_mixed_tolerance_colors":
-        return CalculationError(
-            error_type="MIXED_TOLERANCE_COLORS",
-            message=(
-                "Both gold and silver detected in the same segmentation. A "
-                "physical resistor has exactly one tolerance color; this "
-                "indicates a segmentation artifact."
+                "More than one tolerance band (gold/silver) detected. A "
+                "physical resistor has exactly one tolerance band; multiple "
+                "detections indicate a segmentation artifact."
             ),
             detected_bands=sorted_bands
         ), axis_info
@@ -272,31 +250,49 @@ def determine_reading_direction(sorted_bands: List[BandInfo]) -> str:
     """
     Determine correct reading direction.
 
-    Priority 1: Gold or silver at an edge → color-based decision.
-    Priority 2: Gold/silver interior or absent → gap heuristic.
-    Priority 2b: Gap ambiguous → secondary heuristics (black-edge, width-ratio).
-    Priority 3: All exhausted → error_unknown_direction.
+    Priority 0: Physical sanity check — a real resistor has exactly one
+                tolerance band (gold or silver). If more than one tolerance-
+                colored band is detected (same color, different colors, or at
+                any mix of positions), the segmentation is inconsistent.
+    Priority 1: Single tolerance band at an edge → color-based decision.
+    Priority 2: No tolerance band anywhere → gap heuristic.
+    Priority 2b: Gap ambiguous → secondary heuristics (black-edge only).
 
     Args:
         sorted_bands: Bands sorted by position along axis
 
     Returns:
-        "forward"                       - bands are in correct order
-        "reverse"                       - bands need to be reversed
-        "error_unknown_direction"       - direction could not be determined
-        "error_black_edge"              - black band at a boundary (segmentation artifact)
-        "error_both_ends_tolerance"     - tolerance color at both edges (segmentation artifact)
-        "error_mixed_tolerance_colors"  - gold AND silver both present (segmentation artifact)
+        "forward"                          - bands are in correct order
+        "reverse"                          - bands need to be reversed
+        "error_unknown_direction"          - direction could not be determined
+        "error_black_edge"                 - black band at a boundary (segmentation artifact)
+        "error_multiple_tolerance_bands"   - more than one gold/silver band (segmentation artifact)
     """
     if not sorted_bands:
         return "error_unknown_direction"
 
-    # Pre-check: a single resistor has exactly one tolerance color.
-    # If both gold and silver appear anywhere in the sequence, the
-    # segmentation is inconsistent and no reading can be trusted.
-    colors = {b.color_name.lower() for b in sorted_bands}
-    if "gold" in colors and "silver" in colors:
-        return "error_mixed_tolerance_colors"
+    # Priority 0: physical sanity of gold/silver placement.
+    #
+    # Gold and silver are BOTH tolerance colors AND multiplier colors. A
+    # sub-ohm resistor legally has gold/silver at the multiplier position
+    # (N-2) AND at the tolerance position (N-1) — two adjacent bands of
+    # gold/silver at one end. All other multi-gold/silver arrangements are
+    # segmentation artifacts:
+    #   - count > 2                         → always invalid
+    #   - count == 2 not adjacent-at-an-end → invalid
+    #     (e.g. both edges, or non-adjacent interior)
+    tol_indices = [
+        i for i, b in enumerate(sorted_bands)
+        if b.color_name.lower() in {"gold", "silver"}
+    ]
+    if len(tol_indices) > 2:
+        return "error_multiple_tolerance_bands"
+    if len(tol_indices) == 2:
+        n = len(sorted_bands)
+        valid_last_pair = tol_indices == [n - 2, n - 1]
+        valid_first_pair = tol_indices == [0, 1]
+        if not (valid_last_pair or valid_first_pair):
+            return "error_multiple_tolerance_bands"
 
     first_color = sorted_bands[0].color_name.lower()
     last_color = sorted_bands[-1].color_name.lower()
@@ -304,15 +300,11 @@ def determine_reading_direction(sorted_bands: List[BandInfo]) -> str:
     first_is_tol = first_color in {"gold", "silver"}
     last_is_tol = last_color in {"gold", "silver"}
 
-    # Priority 1: tolerance color at an edge
-    if last_is_tol and not first_is_tol:
+    # Priority 1: tolerance color at an edge (at most one can be true by Priority 0)
+    if last_is_tol:
         return "forward"
-    if first_is_tol and not last_is_tol:
+    if first_is_tol:
         return "reverse"
-    if first_is_tol and last_is_tol:
-        # A real resistor has exactly one tolerance band. Tolerance colors at
-        # both ends is physically impossible; flag as a segmentation artifact.
-        return "error_both_ends_tolerance"
 
     # Priority 2: no tolerance color at either edge — try gap heuristic
     if len(sorted_bands) >= 2:
@@ -327,40 +319,28 @@ def determine_reading_direction(sorted_bands: List[BandInfo]) -> str:
 
 def apply_secondary_heuristics(bands: List[BandInfo]) -> str:
     """
-    Apply secondary heuristics when gold position is ambiguous.
+    Apply secondary heuristics when the gap heuristic is ambiguous.
 
     Heuristics:
     1. Black at either end is invalid (leading zero as first digit; black is
        not a valid tolerance color, so it cannot be the last band either).
-       Both cases indicate a segmentation artifact, so return "error".
-    2. Compare band widths (tolerance bands tend to be thinner).
+       Both cases indicate a segmentation artifact.
 
     Args:
         bands: Sorted list of bands
 
     Returns:
-        "forward", "reverse", or "error_black_edge"
+        "forward" (default) or "error_black_edge"
     """
-    first_band = bands[0]
-    last_band = bands[-1]
+    first_is_black = bands[0].color_name.lower() == "black"
+    last_is_black = bands[-1].color_name.lower() == "black"
 
-    first_is_black = first_band.color_name.lower() == "black"
-    last_is_black = last_band.color_name.lower() == "black"
-
-    # Heuristic 1: Black at either boundary is invalid
+    # Black at either boundary is invalid:
     # - First position: leading zero is not a valid significant digit
     # - Last position: black is not in the valid tolerance color set
     # Reversing does not fix either case, so flag as a segmentation error.
     if first_is_black or last_is_black:
         return "error_black_edge"
-
-    # Heuristic 2: Compare band widths
-    first_width = first_band.bounding_box[2] - first_band.bounding_box[0]
-    last_width = last_band.bounding_box[2] - last_band.bounding_box[0]
-
-    if first_width < last_width * 0.7:
-        # First band significantly thinner - might be tolerance
-        return "reverse"
 
     # Default to forward
     return "forward"
