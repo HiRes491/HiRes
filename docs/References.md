@@ -69,6 +69,7 @@ planned improvements.
 
 | Priority | Condition | Result |
 |----------|-----------|--------|
+| 0  | Gold AND silver both present anywhere in the sequence | `error_mixed_tolerance_colors` (a resistor has exactly one tolerance color — flagged as segmentation artifact) |
 | 1a | Gold or silver is the last band (and not first) | `forward` |
 | 1b | Gold or silver is the first band (and not last) | `reverse` |
 | 1c | Gold or silver at both ends | `error_both_ends_tolerance` (physically impossible — flagged as segmentation artifact) |

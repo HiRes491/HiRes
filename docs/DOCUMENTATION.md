@@ -297,6 +297,12 @@ def determine_reading_direction(sorted_bands: List[BandInfo]) -> str:
 
 Decision tree:
 ```
+Gold AND silver both present?  ──Yes──▶ "error_mixed_tolerance_colors"
+        │                               (a resistor has exactly one
+        │                               tolerance color — flagged as
+        │                               segmentation artifact)
+        No
+        ▼
 Gold/silver at last end only?  ──Yes──▶ "forward" ✓
         │
         No
@@ -708,6 +714,7 @@ The projection value is a scalar representing position along the axis. Sorting b
 | `UNKNOWN_DIRECTION` | No gold/silver at an edge and gap heuristic was ambiguous | Retry with a clearer image; ensure the tolerance band is visible |
 | `BLACK_BOUNDARY_BAND` | Black band at first or last position (invalid as leading digit and as tolerance color) | Segmentation artifact — retry with better image |
 | `BOTH_ENDS_TOLERANCE` | Tolerance colors (gold/silver) at both ends — physically impossible on a real resistor | Segmentation artifact — retry with better image |
+| `MIXED_TOLERANCE_COLORS` | Both gold and silver present anywhere in the segmentation — a resistor has exactly one tolerance color | Segmentation artifact — retry with better image |
 | `INVALID_COLOR` | Color not in lookup table | Check segmentation output |
 
 ### Validation

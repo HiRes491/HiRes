@@ -89,6 +89,17 @@ def calculate_resistance(mask: np.ndarray) -> Union[ResistanceResult, Calculatio
             detected_bands=sorted_bands
         )
 
+    if reading_direction == "error_mixed_tolerance_colors":
+        return CalculationError(
+            error_type="MIXED_TOLERANCE_COLORS",
+            message=(
+                "Both gold and silver detected in the same segmentation. A "
+                "physical resistor has exactly one tolerance color; this "
+                "indicates a segmentation artifact."
+            ),
+            detected_bands=sorted_bands
+        )
+
     if reading_direction == "reverse":
         sorted_bands = list(reversed(sorted_bands))
 
@@ -167,6 +178,17 @@ def calculate_resistance_with_axis_info(mask: np.ndarray) -> tuple:
                 "Tolerance colors (gold/silver) detected at both ends of the "
                 "band sequence. A physical resistor has exactly one tolerance "
                 "band; this indicates a segmentation artifact."
+            ),
+            detected_bands=sorted_bands
+        ), axis_info
+
+    if reading_direction == "error_mixed_tolerance_colors":
+        return CalculationError(
+            error_type="MIXED_TOLERANCE_COLORS",
+            message=(
+                "Both gold and silver detected in the same segmentation. A "
+                "physical resistor has exactly one tolerance color; this "
+                "indicates a segmentation artifact."
             ),
             detected_bands=sorted_bands
         ), axis_info
@@ -259,14 +281,22 @@ def determine_reading_direction(sorted_bands: List[BandInfo]) -> str:
         sorted_bands: Bands sorted by position along axis
 
     Returns:
-        "forward"                     - bands are in correct order
-        "reverse"                     - bands need to be reversed
-        "error_unknown_direction"     - direction could not be determined
-        "error_black_edge"            - black band at a boundary (segmentation artifact)
-        "error_both_ends_tolerance"   - tolerance color at both edges (segmentation artifact)
+        "forward"                       - bands are in correct order
+        "reverse"                       - bands need to be reversed
+        "error_unknown_direction"       - direction could not be determined
+        "error_black_edge"              - black band at a boundary (segmentation artifact)
+        "error_both_ends_tolerance"     - tolerance color at both edges (segmentation artifact)
+        "error_mixed_tolerance_colors"  - gold AND silver both present (segmentation artifact)
     """
     if not sorted_bands:
         return "error_unknown_direction"
+
+    # Pre-check: a single resistor has exactly one tolerance color.
+    # If both gold and silver appear anywhere in the sequence, the
+    # segmentation is inconsistent and no reading can be trusted.
+    colors = {b.color_name.lower() for b in sorted_bands}
+    if "gold" in colors and "silver" in colors:
+        return "error_mixed_tolerance_colors"
 
     first_color = sorted_bands[0].color_name.lower()
     last_color = sorted_bands[-1].color_name.lower()
