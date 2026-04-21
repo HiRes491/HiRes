@@ -17,7 +17,7 @@ planned improvements.
 | 4 | Majority voting | Color confusion (brown/red, orange/gold) | Within each axis cluster, the color with the largest total pixel area wins; minority-color fragments are discarded | Extraction |
 | 5 | Dual axis estimation | Noisy centroid positions | First estimates the axis from band mask orientations via image moments, then refines it with PCA on resolved band centroids | Extraction |
 | 6 | Band count capping | Excessive false detections | Retains only the largest bands by area when more than six regions are detected | Calculation |
-| 7 | Multi-level direction heuristics | Gold band misclassification / occlusion | Cascading decision chain (Table 3) checks gold position at both ends; falls back to secondary heuristics (Table 4) that either flag boundary artifacts as errors or use band-width ratio to choose the direction | Calculation |
+| 7 | Multi-level direction heuristics | Tolerance-band localization without relying on color alone | Cascading decision chain (Table 3): gold/silver at an edge → color-based direction; else → tolerance-gap heuristic (Table 4, order 1); if still ambiguous → secondary heuristics (black-edge error, band-width ratio). Both-ends-tolerance and black-edge cases are flagged as segmentation artifacts. | Calculation |
 | 8 | Band count adaptation | Missing or extra bands | Routes to 3-, 4-, or 5-band formulas based on detected count; assumes default tolerance for 3-band case | Calculation |
 | 9 | E24 series validation | Catch-all sanity check | Normalizes the result and compares against the E24 standard series; flags values outside the typical resistor range | Calculation |
 
@@ -69,26 +69,26 @@ planned improvements.
 
 | Priority | Condition | Result |
 |----------|-----------|--------|
-| 1 | Gold or silver is the last band (and not first) | `forward` |
-| 1 | Gold or silver is the first band (and not last) | `reverse` |
-| 1 | Gold or silver at both ends | `forward` |
-| 2 | Gold/silver interior or absent — try gap heuristic (Table 4, order 1) | — |
-| 2a | → gap heuristic non-ambiguous | use that direction |
-| 2b | → gap heuristic ambiguous | fall to secondary heuristics (Table 4, orders 2–3) |
-| 3 | All heuristics exhausted | `error_unknown_direction` |
+| 1a | Gold or silver is the last band (and not first) | `forward` |
+| 1b | Gold or silver is the first band (and not last) | `reverse` |
+| 1c | Gold or silver at both ends | `error_both_ends_tolerance` (physically impossible — flagged as segmentation artifact) |
+| 2  | Gold/silver interior or absent | → proceed to gap heuristic (2a) |
+| 2a | → gap heuristic (Table 4, order 1) non-ambiguous | use returned direction |
+| 2b | → gap heuristic ambiguous | → proceed to secondary heuristics (Table 4, orders 2–3) |
+| 3  | All heuristics exhausted (default branch of order 3) | `forward` (best-effort default) |
 
 ---
 
 ## Table 4 — Secondary Direction Heuristics
 
-Order 1 is the primary heuristic, triggered by Priority 2 in Table 3 (no gold/silver at an edge). Orders 2–3 are fallbacks, triggered by Priority 2b when the gap heuristic is ambiguous.
+Order 1 is the primary heuristic, triggered by Priority 2 in Table 3 (no gold/silver at an edge). Orders 2–3 are fallbacks, triggered by Priority 2b when the gap heuristic is ambiguous. **The orders are evaluated in sequence; each order that returns a direction or error short-circuits the chain — later orders are not considered.**
 
 | Order | Heuristic | Rationale |
 |-------|-----------|-----------|
-| 1 | **Tolerance-gap:** Compare each end gap against `GAP_RATIO_THRESHOLD` × median interior gap (using PCA projections). If the last gap qualifies and the first does not, return `forward`; if the first qualifies and the last does not, return `reverse`; if neither qualifies, return `ambiguous` and fall to order 2. | On physical resistors the tolerance band is deliberately spaced further from the nearest digit band than digit bands are from each other. This geometric cue is independent of color and band width, making it more robust than the width-ratio heuristic for precision 5-band resistors. |
-| 2 | **Black-edge check:** If black appears at either end of the sequence, return the `BLACK_BOUNDARY_BAND` error. | Black encodes digit 0 (invalid as the first significant digit) and is not a valid tolerance color (cannot be the last band). Reversing does not resolve either case, so black at a boundary is flagged as a segmentation artifact rather than a direction signal. |
+| 1 | **Tolerance-gap:** Compare each end gap against `GAP_RATIO_THRESHOLD` × median interior gap (using PCA projections). If the last gap qualifies and the first does not, return `forward`; if the first qualifies and the last does not, return `reverse`; if neither qualifies, return `ambiguous` and fall to order 2. **Requires ≥4 bands** (i.e. ≥3 inter-band gaps, so that at least one interior gap exists to compute a median). With fewer than 4 bands this heuristic returns `ambiguous` unconditionally. | On physical resistors the tolerance band is deliberately spaced further from the nearest digit band than digit bands are from each other. This geometric cue is independent of color and band width, making it more robust than the width-ratio heuristic for precision 5-band resistors. |
+| 2 | **Black-edge check:** If black appears at either end of the sequence, return the `BLACK_BOUNDARY_BAND` error (short-circuits orders 3 and Default). | Black encodes digit 0 (invalid as the first significant digit) and is not a valid tolerance color (cannot be the last band). Reversing does not resolve either case, so black at a boundary is flagged as a segmentation artifact rather than a direction signal. **Ordered before order 3** because a black edge is an unambiguous signal of malformed input: continuing to a direction-flipping heuristic in that state risks producing a confidently-wrong reading, whereas failing fast gives the caller an explicit error to handle. |
 | 3 | **Band-width ratio:** If the first band's bounding-box width is less than 70% of the last band's width, return `reverse`. | Tolerance bands are physically thinner than digit bands. A narrow first band suggests it is the tolerance band, indicating a reversed sequence. |
-| — | *Default* | If neither heuristic triggers, return `forward`. |
+| — | *Default* | If none of the orders above trigger, return `forward`. |
 
 ---
 

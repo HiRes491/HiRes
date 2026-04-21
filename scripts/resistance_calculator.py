@@ -78,6 +78,17 @@ def calculate_resistance(mask: np.ndarray) -> Union[ResistanceResult, Calculatio
             detected_bands=sorted_bands
         )
 
+    if reading_direction == "error_both_ends_tolerance":
+        return CalculationError(
+            error_type="BOTH_ENDS_TOLERANCE",
+            message=(
+                "Tolerance colors (gold/silver) detected at both ends of the "
+                "band sequence. A physical resistor has exactly one tolerance "
+                "band; this indicates a segmentation artifact."
+            ),
+            detected_bands=sorted_bands
+        )
+
     if reading_direction == "reverse":
         sorted_bands = list(reversed(sorted_bands))
 
@@ -145,6 +156,17 @@ def calculate_resistance_with_axis_info(mask: np.ndarray) -> tuple:
                 "Black band detected at a boundary position. Black is invalid "
                 "as the first significant digit (leading zero) and is not a "
                 "valid tolerance color. Likely a segmentation artifact."
+            ),
+            detected_bands=sorted_bands
+        ), axis_info
+
+    if reading_direction == "error_both_ends_tolerance":
+        return CalculationError(
+            error_type="BOTH_ENDS_TOLERANCE",
+            message=(
+                "Tolerance colors (gold/silver) detected at both ends of the "
+                "band sequence. A physical resistor has exactly one tolerance "
+                "band; this indicates a segmentation artifact."
             ),
             detected_bands=sorted_bands
         ), axis_info
@@ -237,10 +259,11 @@ def determine_reading_direction(sorted_bands: List[BandInfo]) -> str:
         sorted_bands: Bands sorted by position along axis
 
     Returns:
-        "forward"                 - bands are in correct order
-        "reverse"                 - bands need to be reversed
-        "error_unknown_direction" - direction could not be determined
-        "error_black_edge"        - black band at a boundary (segmentation artifact)
+        "forward"                     - bands are in correct order
+        "reverse"                     - bands need to be reversed
+        "error_unknown_direction"     - direction could not be determined
+        "error_black_edge"            - black band at a boundary (segmentation artifact)
+        "error_both_ends_tolerance"   - tolerance color at both edges (segmentation artifact)
     """
     if not sorted_bands:
         return "error_unknown_direction"
@@ -257,8 +280,9 @@ def determine_reading_direction(sorted_bands: List[BandInfo]) -> str:
     if first_is_tol and not last_is_tol:
         return "reverse"
     if first_is_tol and last_is_tol:
-        # Both ends are tolerance colors — unusual; treat as forward
-        return "forward"
+        # A real resistor has exactly one tolerance band. Tolerance colors at
+        # both ends is physically impossible; flag as a segmentation artifact.
+        return "error_both_ends_tolerance"
 
     # Priority 2: no tolerance color at either edge — try gap heuristic
     if len(sorted_bands) >= 2:

@@ -297,28 +297,30 @@ def determine_reading_direction(sorted_bands: List[BandInfo]) -> str:
 
 Decision tree:
 ```
-Gold/silver at last end? ──Yes──▶ "forward" ✓
+Gold/silver at last end only?  ──Yes──▶ "forward" ✓
         │
         No
         ▼
-Gold/silver at first end? ─Yes──▶ "reverse" (flip order)
+Gold/silver at first end only? ─Yes──▶ "reverse" (flip order)
         │
         No
         ▼
-Gold/silver at both ends? ─Yes──▶ "forward" (treat as correct)
-        │
-        No (no tolerance color at an edge)
+Gold/silver at both ends?      ─Yes──▶ "error_both_ends_tolerance"
+        │                               (physically impossible —
+        │                               flagged as segmentation artifact)
+        No (no tolerance color at an edge, or both ends non-tolerance)
         ▼
-Gap heuristic: end-gap > 1.5 × median interior gap?
+Gap heuristic (requires ≥4 bands):
+end-gap ≥ 1.5 × median interior gap?
         │
-    Yes (one end) ──────────────▶ direction from larger end-gap
+    Yes (one end qualifies) ──────────▶ direction from larger end-gap
         │
-    No (ambiguous)
+    No (ambiguous, or <4 bands)
         ▼
-Apply secondary heuristics
-        │
-        ▼
-    "error_unknown_direction"
+Apply secondary heuristics (Table 4 orders 2–3):
+  black-edge → "error_black_edge" (short-circuits)
+  width-ratio → "reverse" if first <70% of last
+  else → "forward"
 ```
 
 **Secondary Heuristics** (when gap heuristic is ambiguous):
@@ -705,6 +707,7 @@ The projection value is a scalar representing position along the axis. Sorting b
 | `INSUFFICIENT_BANDS` | < 3 bands detected | Improve image quality |
 | `UNKNOWN_DIRECTION` | No gold/silver at an edge and gap heuristic was ambiguous | Retry with a clearer image; ensure the tolerance band is visible |
 | `BLACK_BOUNDARY_BAND` | Black band at first or last position (invalid as leading digit and as tolerance color) | Segmentation artifact — retry with better image |
+| `BOTH_ENDS_TOLERANCE` | Tolerance colors (gold/silver) at both ends — physically impossible on a real resistor | Segmentation artifact — retry with better image |
 | `INVALID_COLOR` | Color not in lookup table | Check segmentation output |
 
 ### Validation
