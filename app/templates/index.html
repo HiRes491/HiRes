@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Phone Camera Inference</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="top-bar">
+        <p class="eyebrow">Live Inference</p>
+        <h1>Phone Camera Inference</h1>
+        <p class="subtitle">Camera UI shell for live and single-frame prediction.</p>
+      </header>
+
+      <section class="preview-card" aria-label="Camera preview">
+        <div class="section-head">
+          <h2>Camera</h2>
+          <span class="status-badge status-badge--camera">Ready</span>
+        </div>
+        <video id="camera-preview" autoplay playsinline muted></video>
+        <img id="camera-frozen" alt="Captured frame" hidden />
+        <canvas id="snapshot-canvas" hidden></canvas>
+        <p id="camera-status" class="camera-status" aria-live="polite">Camera is stopped.</p>
+      </section>
+
+      <section class="controls" aria-label="Capture controls">
+        <button id="start-live-btn" type="button" aria-label="Start live camera">
+          Start Live
+        </button>
+        <button id="stop-live-btn" type="button" aria-label="Stop camera stream" disabled>
+          Stop
+        </button>
+        <button id="take-photo-btn" type="button" aria-label="Freeze current frame and predict" disabled>
+          Take Photo
+        </button>
+        <button id="flip-camera-btn" type="button" aria-label="Flip camera">
+          Flip Camera
+        </button>
+      </section>
+
+      <section class="overlay-card" aria-label="Overlay preview">
+        <div class="section-head">
+          <h2>Overlay Preview</h2>
+          <span class="status-badge">Output</span>
+        </div>
+        <img id="overlay-preview" alt="Prediction overlay preview" hidden />
+        <p id="overlay-placeholder">No captured frame yet.</p>
+      </section>
+
+      <section class="overlay-card" aria-label="Segmentation view">
+        <div class="section-head">
+          <h2>Segmentation View</h2>
+          <span class="status-badge">Debug</span>
+        </div>
+        <img id="segmentation-view" alt="Annotated segmentation mask with band labels, centroid distances, and PCA axis" hidden />
+        <p id="segmentation-placeholder">No segmentation yet.</p>
+      </section>
+
+      <section class="settings-card" aria-label="Capture settings">
+        <div class="section-head">
+          <h2>Settings</h2>
+          <span class="status-badge">Timing</span>
+        </div>
+        <label for="capture-interval">Capture interval (seconds)</label>
+        <input id="capture-interval" type="number" min="0.1" step="0.1" value="0.5" />
+        <p id="capture-hint" class="hint">Adjust live capture frequency (default: 0.5s).</p>
+      </section>
+
+      <section class="result-card" aria-label="Prediction result">
+        <div class="section-head">
+          <h2>Result</h2>
+        </div>
+        <p><strong>Resistance:</strong> <span id="resistance-text">--</span></p>
+        <p>
+          <strong>Status:</strong>
+          <span id="status-text" class="status-badge" role="status" aria-live="polite">Idle</span>
+        </p>
+        <pre id="result-detail" aria-live="polite">No request sent yet.</pre>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
