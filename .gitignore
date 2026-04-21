@@ -1,0 +1,42 @@
+# Large binaries / datasets
+models/*.keras
+models/*.h5
+models/*.pb
+archive/
+data/raw_images/
+data/Resistor_Values/
+data/tfrecords/
+data/inference_results/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.bbl
+*.blg
+*.nav
+*.snm
+*.vrb
+
+# OMC state
+.omc/
+.claude/

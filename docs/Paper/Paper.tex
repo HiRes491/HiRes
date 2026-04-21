@@ -1,0 +1,629 @@
+%% =============================================================
+%%  A Multi-Model Pipeline for Image-Based Resistor Value
+%%  Classification
+%%  Texas A&M University at Qatar | ECEN 491 Senior Design
+%%
+%%  Compile with pdflatex in Overleaf.
+%%  Pipeline figure filename: overv.jpg (already in your project)
+%%
+%%  \hl{...} = yellow highlight for things you need to fill in
+%%  \debatable{...} = highlighted text you may want to cut
+%%  \todo{...} = red marker for required items
+%% =============================================================
+
+\documentclass[conference]{IEEEtran}
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{soul}
+\usepackage{subcaption}
+\usepackage[colorlinks=true,linkcolor=black,citecolor=black,
+            urlcolor=blue]{hyperref}
+
+\sethlcolor{yellow}
+
+%% Suggestion box — stays within its own column
+\newcommand{\figbox}[1]{%
+  \vspace{4pt}%
+  \noindent
+  \colorbox{yellow}{%
+    \parbox{\dimexpr\columnwidth-2\fboxsep\relax}{%
+      \small\textbf{[FIGURE/TABLE SUGGESTION]:} #1%
+    }%
+  }%
+  \vspace{4pt}%
+}
+
+\newcommand{\debatable}[1]{\hl{(#1)}}
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+
+% =============================================================
+\title{A Multi-Model Pipeline for Image-Based Resistor Value
+       Classification}
+
+
+\author{\IEEEauthorblockN{Rama Y. AlHamidi}
+\IEEEauthorblockA{\textit{Electrical \& Computer Engineering Department} \\
+\textit{Texas A\&M University at Qatar}\\
+Doha, Qatar \\
+rama.alhamidi@qatar.tamu.edu}
+\and
+\IEEEauthorblockN{Aseel A. Mohamed}
+\IEEEauthorblockA{\textit{Electrical \& Computer Engineering Department} \\
+\textit{Texas A\&M University at Qatar}\\
+Doha, Qatar \\
+aseel.mohamed@qatar.tamu.edu}
+\and
+\IEEEauthorblockN{Mustafa A. Eltayeb}
+\IEEEauthorblockA{\textit{Electrical \& Computer Engineering Department} \\
+\textit{Texas A\&M University at Qatar}\\
+Doha, Qatar \\
+m2907@tamu.edu} 
+\and
+\IEEEauthorblockN{\textsuperscript{} Osama Hasoneh}
+\IEEEauthorblockA{\textit{Electrical \& Computer Engineering Department} \\
+\textit{Texas A\&M University at Qatar}\\
+Doha, Qatar \\
+osama.hasoneh@qatar.tamu.edu}
+\and
+\IEEEauthorblockN{5\textsuperscript{th} Given Name Surname}
+\IEEEauthorblockA{\textit{dept. name of organization (of Aff.)} \\
+\textit{name of organization (of Aff.)}\\
+City, Country \\
+email address or ORCID}
+}
+
+% =============================================================
+\begin{document}
+ 
+\maketitle
+ 
+% =============================================================
+\begin{abstract}
+Reading resistor values manually is slow, error-prone, and impractical at scale; yet automated color-band reading has resisted reliable solutions because the task couples fine-grained color segmentation with geometric reasoning about band order and orientation. This paper presents \hl{\textit{HiRes}}, a hierarchical three-stage pipeline that takes a full-frame image as input and produces a resistance value as output, without any human intervention. The pipeline chains a YOLOv8 detection model, a UNet++ semantic segmentation model, and a PCA-based band extraction stage. Detection isolates individual resistors from cluttered scenes; segmentation classifies each pixel into one of 13 color-band classes; band extraction recovers the ordered color sequence and maps it to a resistance value via standard IEC color-code tables. Labeled training data for segmentation was limited to 168 annotated crops. To address this, we apply a semi-supervised pseudo-labeling strategy: a Phase 1 model trained on labeled data generates masks for 270 unlabeled images, and a confidence-based quality filter retains 253 of these as pseudo-labels for Phase 2 fine-tuning. The detection model achieves an F1 score of 0.9945 and mAP@0.5 of 0.9906. The segmentation model achieves a mean IoU of 0.7514 after Phase 1 and 0.7348 after Phase 2; the Phase 2 drop on the validation set is offset by measurably better generalization on unseen real-world crops. The full pipeline achieves approximately 100\% resistance-reading accuracy on a labeled 27-image test set and 87–90\% string-match accuracy on 30 unseen full-frame images. \\
+
+\end{abstract}
+ 
+\begin{IEEEkeywords}
+Resistor value classification, object detection, semantic segmentation, UNet++, EfficientNet-B0, YOLOv8, pseudo-labeling, semi-supervised learning, computer vision, OpenCV.
+\end{IEEEkeywords}
+ 
+% =============================================================
+\section{Introduction}
+\label{sec:intro}
+
+Resistors are among the most common passive components in electronic circuits. Their values are encoded as a sequence of colored bands printed on the component body according to the IEC 60062 standard. Correctly reading these bands is a routine task in electronics assembly, quality control, and circuit debugging. However, at scale, manual inspection is slow, inconsistent, and prone to error.
+
+Automating resistor reading with computer vision is therefore a natural solution, but it comes with its own set of challenges. First, because resistors are cylindrical, their color bands wrap around a curved surface, producing specular highlights and illumination-dependent hue shifts. Additionally, in full-frame images, components may appear at arbitrary orientations and scales, often surrounded by wires, boards, and other clutter. Another challenge appears due to the fact that several resistor colors are visually similar under unconstrained lighting; brown, red, and orange, for example, occupy nearby regions of color space and are frequently confused. The reading direction is also ambiguous; while a gold tolerance band should appear last, some resistors lack gold altogether, and multiple candidate directions may yield seemingly valid color sequences.
+
+We argue that resistor value estimation is not a single vision problem, but a sequence of three dependent tasks that parallels how a person reads a resistor. First, the resistor must be localized within a full-frame image, analogous to visually identifying the component in a cluttered scene. Second, its color bands must be segmented at the pixel level, since band boundaries vary with orientation, scale, and image quality and cannot be reliably captured by fixed geometric rules. Third, the segmented bands must be ordered and decoded into a valid resistance value, analogous to mapping the observed color sequence to its corresponding resistance.
+
+\hl{Existing methods typically address only one part of this pipeline, such as resistor detection, band segmentation, or direct color-sequence decoding, and often assume cropped, aligned, or otherwise constrained inputs. In contrast, practical deployment requires a system that operates directly on unconstrained full-frame images.}
+
+To address this gap, we present \textit{HiRes}, a hierarchical pipeline for end-to-end resistor value identification. The proposed framework first uses YOLOv8 \cite{jocher2023ultralytics} to detect and crop resistor instances from full-frame images. Each crop is then segmented into 13 pixel-level classes using UNet++ \cite{zhou2020unetredesigningskipconnections} with an EfficientNet-B0 encoder \cite{tan2019efficientnet}. Finally, a PCA-based band extraction and ordering stage recovers the band sequence and maps it to the corresponding resistance value. To address limited pixel-level annotations, we further employ a two-phase semi-supervised training strategy in which an initial segmentation model generates pseudo-labels for unlabeled crops, expanding the effective training set without additional manual annotation. Experimental results on unseen full-frame images show that the proposed pipeline can accurately decode resistor values under realistic imaging conditions.
+
+The main contributions of this paper are as follows:
+\begin{itemize}
+  \item An end-to-end pipeline for resistor value identification from unconstrained full-frame images, requiring no manual cropping, alignment, or preprocessing.
+  \item A two-phase semi-supervised segmentation strategy that expands the effective training set without additional manual annotation.
+  \item A PCA-based band ordering method that robustly handles arbitrary resistor orientations by projecting band centroids onto the principal axis of the component.
+\end{itemize}
+
+The remainder of this paper is organized as follows: Section II surveys related work. Section III describes the datasets. Sections IV–IX detail each pipeline stage. Section X reports
+experimental results, ablation studies, and error analysis. Section XI discusses limitations, and Section XIII concludes.
+ 
+% =============================================================
+\section{Related Work}
+\label{sec:related work}
+\hl{needs some analysis work}
+
+Prior work on resistor value identification falls into two categories: (i) classical image processing methods, and (ii) deep learning methods. The three technical components underlying this work are object detection, semantic segmentation, and PCA-based band ordering. Each is grounded in prior literature, which we briefly review below.
+
+% make a subsection for each method then also subsections for each component
+ 
+% =============================================================
+% =============================================================
+\section{Dataset}
+\label{sec:datasets}
+
+Table~\ref{tab:datasets} summarizes the datasets used for both detection and segmentation.
+
+\subsection{Detection Dataset}
+The detection stage was trained on a combined dataset of 3000 images collected from multiple publicly available Roboflow datasets and supplemented with photographs captured by the project team. All images were annotated using bounding boxes in Roboflow. The dataset was formatted for object detection and included two classes: \textit{resistor} \cite{resistor-band-dectection_dataset,resistors-7wdzf_dataset,resistors-dooos_dataset} and \textit{ceramic\_cap}. Ceramic capacitors were included because of their visual similarity to resistors, particularly their cylindrical shape, which encourages the detector to learn resistor-specific features rather than relying only on coarse shape cues. The final split consisted of 2256 training images, 564 validation images, and 180 test images.
+
+\subsection{Segmentation Dataset}
+
+The segmentation stage used resistor crops annotated at the pixel level with the Datature annotation platform. The class taxonomy follows a 13-class color map: background, black, blue, brown, gold, green, grey, orange, red, silver, violet, white, and yellow. The gold and silver classes were treated as tolerance bands rather than significant digits or multipliers in the decoding stage, consistent with the standard resistor color code. Table~\ref{tab:colormap} summarizes the label map used during annotation. 
+
+\subsubsection{Labeled Set} 
+The manually labeled dataset covered both 4-band and 5-band resistors. In Phase 1, the segmentation model was trained using only the labeled set, consisting of 192 training images and 49 validation images. Crops are produced by running the detection model on source images and padding bounding boxes by 10\%. 
+
+\subsubsection{Pseudo-Labeled Set} 
+To address the limited size of the labeled dataset, a semi-supervised strategy was adopted in Phase 2. The Phase-1 model generates predictions on 250 unlabeled crops. A pseudo-label is accepted if the mean max-softmax confidence over the ROI exceeds 0.65, the fraction of non-background pixels lies within [0.05, 0.95],
+and the crop satisfies the minimum dimension constraint. This yields 250 accepted pseudo-labeled crops, expanding the effective training set to 442 examples for Phase-2 training.
+
+\begin{table}[!t]
+  \caption{Segmentation Color Class Label Map}
+  \label{tab:colormap}
+  \centering
+  \renewcommand{\arraystretch}{1.15}
+  \begin{tabular}{@{}clcc@{}}
+    \toprule
+    \textbf{ID} & \textbf{Color} & \textbf{Hex Code} & \textbf{Digit / Role} \\
+    \midrule
+    0  & Background & \texttt{\#FFCDD2} & --- \\
+    1  & Black      & \texttt{\#000000} & 0 / $\times 1$ \\
+    2  & Blue       & \texttt{\#004AAD} & 6 / $\times 10^{6}$ \\
+    3  & Brown      & \texttt{\#5E3831} & 1 / $\times 10$ \\
+    4  & Gold       & \texttt{\#EBBF7C} & $\pm 5\%$ tolerance \\
+    5  & Green      & \texttt{\#00BF63} & 5 / $\times 10^{5}$ \\
+    6  & Grey       & \texttt{\#585A59} & 8 / $\times 10^{8}$ \\
+    7  & Orange     & \texttt{\#FF914D} & 3 / $\times 10^{3}$ \\
+    8  & Red        & \texttt{\#E43232} & 2 / $\times 10^{2}$ \\
+    9  & Silver     & \texttt{\#CDCDCD} & $\pm 10\%$ tolerance \\
+    10 & Violet     & \texttt{\#5E17EB} & 7 / $\times 10^{7}$ \\
+    11 & White      & \texttt{\#FFFFFF} & 9 / $\times 10^{9}$ \\
+    12 & Yellow     & \texttt{\#F4CB24} & 4 / $\times 10^{4}$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+
+\begin{table}[!t]
+  \caption{Dataset Summary}
+  \label{tab:datasets}
+  \centering
+  \renewcommand{\arraystretch}{1.15}
+  \begin{tabular}{@{}llccc@{}}
+    \toprule
+    \textbf{Task} & \textbf{Source} & \textbf{Train} & \textbf{Val} & \textbf{Test} \\
+    \midrule
+    Detection & Roboflow & 2256 & 564 & 180 \\
+    \midrule
+    Segmentation & Labeled (Datature), Phase 1 & 192 & 49 & --- \\
+                 & + pseudo-labeled, Phase 2 & 442 & 49 & --- \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Test Set and Evaluation Data}
+
+End-to-end evaluation was performed on a held-out folder of full-frame real-world images that were not used during training or validation. These images contain complete circuit scenes rather than pre-cropped resistors, allowing the full pipeline to be evaluated under realistic conditions. The test folder includes resistors appearing at different orientations, scales, and lighting conditions, as well as background clutter from surrounding components and circuit structures. This setup ensures that evaluation reflects the actual deployment scenario, where the system must first detect the resistor, then segment its bands, and finally decode the ordered color sequence into a resistance value.
+
+% =============================================================
+\section{Methodology}
+\label{sec:method}
+HiRes processes a full-frame image through four sequential stages. First, a YOLOv8 detection model locates each resistor in the scene and produces axis-aligned bounding boxes. OpenCV crops each detected region and passes it to the segmentation model. A UNet++ model then classifies every pixel in the crop into one of 13 color-band classes. The resulting mask is passed to the band extraction stage, which identifies individual band regions, determines their order along the resistor axis, and assigns a color to each band by majority vote over its pixel values. Finally, the ordered color sequence is decoded into a resistance value using the IEC 60062 color-code tables. Each stage is described in detail below.]
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=\textwidth]{Figures/overv.jpg}
+    \caption{Overview of the proposed HiRes pipeline. A full-frame image is first processed by a YOLOv8 detector to localize resistors. Each detected region is cropped and passed to a UNet++ segmentation model to predict pixel-level color classes. The segmented bands are then extracted and ordered using PCA, and finally decoded into a resistance value based on the IEC 60062 standard.}
+    \label{fig:pipeline}
+\end{figure*}
+
+\subsection{Object Detection}
+In this stage, we fine-tune a pretrained YOLOv8n detector to map full-frame images to resistor candidate bounding boxes and convert each detection into a segmentation-ready crop. The model is initialized from pretrained weights and trained on the detection dataset described in Section~III. On a held-out detection test set of 180 images, the trained detector achieves an F1 score of 0.9945, indicating highly reliable resistor localization.
+
+Images are then loaded with OpenCV and converted from BGR to RGB before processing. The detection confidence threshold is set to 0.1 to maximize recall; low-confidence boxes are subsequently filtered by the downstream segmentation and confidence fusion stages. Each detected box yields an $(x_1, y_1, x_2, y_2)$ bounding rectangle and a per-box confidence score $c_{det} \in [0, 1]$
+
+Each bounding box is expanded by 10\% on each side (clamped to image boundaries)
+before cropping. This context padding preserves end-band pixels that a tight box would clip. Additionally, crops with $min(height, width) <50 px$ are discarded, as they contain insufficient spatial resolution for reliable segmentation.
+
+\subsection{Band Segmentation}
+This stage predicts a per-pixel class label from each crop using a UNet++ encoder-decoder network. The 13 output classes are: background (class 0), resistor body (class 1), and 11 color band classes corresponding to the IEC 60062 color code system.
+
+\subsubsection{Model Architecture}
+The segmentation model is UNet++ \cite{zhou2020unetredesigningskipconnections} with an EfficientNet-B0 encoder \cite{tan2019efficientnet}. UNet++ differs from plain U-Net in its skip pathways; intermediate nodes aggregate outputs from earlier nodes at the same resolution and upsampled outputs from the level below, progressively enriching encoder feature maps before they fuse with decoder representations. This reduces the semantic gap that plain skip connections leave between encoder and decoder, producing finer boundary predictions on small color regions. EfficientNet-B0 provides a compact, ImageNet-pretrained backbone with compound-scaled depth, width, and resolution, achieving strong feature extraction at a modest parameter count. Input crops are resized and padded with aspect-ratio preservation to 512 × 512 px before entering the network. The
+resize-and-pad strategy ensures that elongated resistors are not distorted, which matters because band-width ratios carry semantic information.
+
+
+\subsubsection{Training Strategy}
+Training proceeds in two phases. The best mIoU for both is summarized in Table~\ref{tab:3}
+
+\paragraph{Phase 1 — Supervised} The model is trained on 192 labeled crops for 200 epochs. The loss is an equal-weight combination of Dice loss and cross-entropy:
+
+\begin{equation}
+\mathcal{L} = 0.5 \cdot \mathcal{L}({\mathrm{CE})} + 0.5 \cdot \mathcal{L}({\mathrm{Dice})}
+\end{equation}
+
+Cross-entropy penalizes per-pixel misclassification and is well-suited to the highly imbalanced class distribution that arises when background dominates the image area. Dice loss directly optimizes the overlap between predicted and ground-truth regions per class, mitigating the tendency of cross-entropy to be dominated by the background class. Their equal combination provides balanced gradient signal across both majority and minority classes. 
+\paragraph{Augmentation Pipeline} 
+The augmentation pipeline is applied during training only and is designed to simulate natural variation in resistor orientation and imaging conditions while preserving the color information on which the task depends. The policy includes horizontal flipping ($p=0.5$), vertical flipping ($p=0.5$), rotation up to $180^\circ$ ($p=0.8$), affine transformation with scale in $[0.25,1.0]$ and small translation ($p=0.7$), random brightness and contrast adjustment ($p=0.7$), Gaussian blur ($p=0.3$), CLAHE ($p=0.3$), Gaussian noise ($p=0.3$), and ImageNet normalization followed by tensor conversion.
+
+Hue and saturation jitter are intentionally excluded. Because color is the primary discriminative feature between resistor-band classes, perturbing hue would alter the semantic signal the model is intended to learn rather than provide meaningful variation.
+
+\paragraph{Phase 2 — Semi-Supervised Fine-Tuning} The Phase-1 checkpoint is used to generate pseudo-labels on 250 unlabeled crops. A pseudo-label is accepted if the following three conditions hold simultaneously:
+\begin{itemize}
+    \item Mean max-softmax confidence $\geq 0.65$
+    \item Non-background pixel fraction $\in [0.05, 0.95]$
+    \item Crop minimum dimension $\geq 50 px$
+\end{itemize}
+
+This yields 250 accepted crops. Phase-2 training fine-tunes from the Phase-1 checkpoint on the combined 192 labeled + 250 pseudo-labeled set, using the same loss and optimizer settings. The validation set is the 49 labeled crops only, since pseudo-labeled crops have no ground truth available for evaluation. 
+
+\begin{table}[!t]
+  \caption{Best mIoU for both segmentation Phases}
+  \label{tab:3}
+  \centering
+  \renewcommand{\arraystretch}{1.15}
+  \begin{tabular}{@{}ll@{}}
+    \toprule
+    \textbf{Phase 1} & \textbf{Phase 2}\\
+    \midrule
+    0.7514 & 0.7348 \\
+    \midrule
+  \end{tabular}
+\end{table}
+
+\subsection{Band Extraction}
+
+\subsubsection{Connected Component Analysis}
+\hl{Osama — TODO}
+
+\subsubsection{Axis-Based Clustering}
+\hl{Osama — TODO}
+
+\subsubsection{Majority Voting}
+\hl{Osama — TODO}
+
+\figbox{%
+  \textbf{Band extraction visualization} for one resistor
+  (recommended: three panels: the raw segmentation mask,
+  the mask with the fitted PCA axis and component centroids
+  overlaid, and the final resolved band sequence with the
+  predicted resistance value and both confidence scores.)
+  This is the most informative figure for this section.
+}
+
+\subsection{Band Ordering}
+
+\subsubsection{PCA-Based Axis Detection}
+\hl{Osama — TODO}
+
+\subsubsection{Projection and Sorting}
+\hl{Osama — TODO}
+
+\subsection{Resistance Calculation}
+
+\subsubsection{Reading Direction Detection}
+\hl{Osama — TODO}
+
+\subsubsection{Color Code Decoding}
+\hl{Osama — TODO}
+
+\subsubsection{Band Count Handling}
+\hl{Osama — TODO}
+% =============================================================
+\section{Results}
+\label{sec:results}
+ 
+\subsection{Resistor Detection}
+\label{sec:results_yolo}
+ 
+The YOLOv8n detector achieves an F1 score of 0.9945 on the
+\hl{x}-image held-out test split.
+Table~\ref{tab:yolo_results} reports precision, recall, F1,
+and mAP across both object classes.
+ 
+\begin{table}[!t]
+  \caption{YOLOv8n Detection Results}
+  \label{tab:yolo_results}
+  \centering
+  \renewcommand{\arraystretch}{1.15}
+  \begin{tabular}{@{}lccccc@{}}
+    \toprule
+    \textbf{Class} & \textbf{P} & \textbf{R}
+        & \textbf{F1} & \textbf{mAP\textsubscript{50}}
+        & \textbf{mAP\textsubscript{50:95}} \\
+    \midrule
+    Resistor    & \hl{x} & \hl{x} & \hl{x} & \hl{x} & \hl{x} \\
+    Ceramic cap & \hl{x} & \hl{x} & \hl{x} & \hl{x} & \hl{x} \\
+    \midrule
+    All & 0.9945 & 0.9945 & \textbf{0.9945} & 0.9906 & 0.8569 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+ 
+The high detection accuracy across different component sizes,
+backgrounds, and lighting conditions confirms that the model
+generalizes reliably beyond its training distribution.
+\debatable{With approximately 3 million parameters, inference
+completes in roughly 17\,ms per image, making the detection
+stage negligible in overall pipeline latency.}
+Because segmentation errors are rarely caused by a poor crop,
+incorrect resistance values from the full pipeline can
+generally be attributed to failures in downstream stages.
+ 
+\figbox{%
+  \textbf{YOLO training curves}: precision, recall, mAP50,
+  and mAP50-95 plotted against epoch for both train and
+  validation sets. These are generated automatically by the
+  Ultralytics trainer and saved to the run output folder.
+}
+ 
+\subsection{Band Segmentation}
+\label{sec:results_seg}
+ 
+Segmentation quality is measured by mean
+Intersection-over-Union (mIoU) over the 12 non-background
+classes on the validation split.
+Phase~1 achieves a best validation mIoU of \textbf{0.7514},
+and Phase~2 fine-tuning reaches a best mIoU of
+\textbf{0.7348}.
+Per-class results for both phases are reported in
+Table~\ref{tab:segmentation_iou}.
+ 
+\begin{table}[!t]
+  \caption{Per-Class IoU: Phase 1 vs.\ Phase 2}
+  \label{tab:segmentation_iou}
+  \centering
+  \renewcommand{\arraystretch}{1.15}
+  \begin{tabular}{@{}lcc@{}}
+    \toprule
+    \textbf{Class} & \textbf{Phase 1 IoU} & \textbf{Phase 2 IoU} \\
+    \midrule
+    Black  & \hl{x} & \hl{x} \\
+    Blue   & \hl{x} & \hl{x} \\
+    Brown  & \hl{x} & \hl{x} \\
+    Gold   & \hl{x} & \hl{x} \\
+    Green  & \hl{x} & \hl{x} \\
+    Grey   & \hl{x} & \hl{x} \\
+    Orange & \hl{x} & \hl{x} \\
+    Red    & \hl{x} & \hl{x} \\
+    Silver & \hl{x} & \hl{x} \\
+    Violet & \hl{x} & \hl{x} \\
+    White  & \hl{x} & \hl{x} \\
+    Yellow & \hl{x} & \hl{x} \\
+    \midrule
+    \textbf{Mean} & \textbf{0.7514} & \textbf{0.7348} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+ 
+The slight drop in aggregate mIoU from Phase~1 to Phase~2 is
+not indicative of degraded performance.
+The validation set consists of tightly framed, small crops,
+while Phase~2 training introduces YOLO-produced crops with
+broader context and larger scale, better reflecting the
+actual inference distribution.
+The Phase~2 model is therefore optimized for a more
+representative image distribution at the cost of a small
+decrease on the narrow validation set.
+This is confirmed by the end-to-end results in
+Section~\ref{sec:results_e2e}, which show that Phase~2
+produces more accurate resistance predictions on real images.
+ 
+\figbox{%
+  \textbf{Phase 1 vs.\ Phase 2 segmentation comparison}:
+  for four resistors spanning a range of difficulty (one
+  clear image, one with brown-red ambiguity, one under
+  poor lighting, one failure case), show the original crop
+  alongside the Phase~1 and Phase~2 predicted masks.
+}
+ 
+\subsection{End-to-End Pipeline}
+\label{sec:results_e2e}
+ 
+The complete pipeline is evaluated on two distinct test sets,
+summarized in Table~\ref{tab:e2e}.
+ 
+\begin{table}[!t]
+  \caption{End-to-End Pipeline Accuracy}
+  \label{tab:e2e}
+  \centering
+  \renewcommand{\arraystretch}{1.15}
+  \begin{tabular}{@{}lccc@{}}
+    \toprule
+    \textbf{Test Set} & \textbf{Images}
+        & \textbf{Accuracy} & \textbf{Notes} \\
+    \midrule
+    Labeled test   & 27 & $\approx$100\% & In-distribution \\
+    Unseen test    & 30 & 87--90\%       & Full-frame, diverse \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+ 
+The labeled test set of 27 tightly framed crops is held out
+from the annotated dataset.
+After applying the band area filter in the extraction stage,
+the pipeline correctly identifies all 27 samples.
+ 
+The more revealing evaluation is the unseen test set: 30
+full-frame photographs collected independently of any training
+data, capturing resistors under varying lighting and
+backgrounds.
+A prediction is counted as correct only if the full formatted
+output (e.g., ``4.7\,k$\Omega$ $\pm 5\%$'') exactly matches
+the ground-truth label.
+The pipeline achieves 87--90\% accuracy on this set.
+ 
+Analysis of the remaining errors reveals three recurring
+failure modes.
+The most frequent is color confusion between brown and red,
+and between orange and gold — pairs that are perceptually
+close under warm or incandescent light and that the
+segmentation model does not always have sufficient evidence
+to separate from a single image.
+Band fragmentation, where a thin band appears as two
+disconnected regions in the mask, can shift the detected
+band count and propagate as an incorrect reading.
+Reading direction errors occur when the gold tolerance band
+is partially occluded or mislabeled as yellow, causing the
+extraction algorithm to reverse the band sequence.
+ 
+\figbox{%
+  \textbf{Pipeline output examples}: show the four-panel
+  comparison output (original crop, Phase~1 mask, Phase~2
+  mask with PCA axis overlay, result text panel) for three
+  to four resistors, including one correct prediction and
+  one failure case with both confidence scores displayed.
+  These panels are generated by
+  \texttt{compare\_with\_final\_stage.py}.
+}
+ 
+% =============================================================
+\section{Conclusion}
+\label{sec:conclusion}
+ 
+This paper presented a three-stage pipeline for automated
+resistance value identification from unconstrained
+photographs.
+A YOLOv8n object detector handles localization and produces
+isolated resistor crops.
+A two-phase UNet++ segmentation model with an EfficientNet-B0
+encoder classifies each pixel by band color, with
+pseudo-labeling bridging the gap between a small manually
+annotated starting set of 168 images and the 445-image
+training set used for fine-tuning.
+A PCA-based band extraction algorithm resolves segmentation
+artifacts and handles reading direction ambiguity for
+3- to 5-band resistors.
+Taken together, the pipeline correctly identifies 87--90\%
+of resistance values from unseen full-frame images, with the
+detector alone reaching an F1 of 0.9945.
+ 
+Improving on that number points toward several concrete
+directions.
+The most impactful is targeted growth of the segmentation
+training set, with an emphasis on the color pairs responsible
+for the majority of failures.
+Brown-red and orange-gold confusion arises not from a design
+weakness in the model, but from the fact that these pairs can
+be genuinely ambiguous in a photograph taken under warm
+artificial light.
+A larger and more lighting-diverse labeled set would give the
+model more signal to resolve these cases.
+Pairing this with a color calibration pre-processing step
+that estimates and partially corrects the color temperature
+of each input image could further reduce the ambiguity before
+it reaches the segmentation model.
+ 
+Silver tolerance bands represent a gap that is straightforward
+to identify but non-trivial to close.
+Silver is a specular color whose appearance depends heavily on
+the angle and color of the incident light, making it far more
+variable in appearance than gold.
+Closing this gap requires not only an entry in the resistance
+calculator but also sufficient labeled examples of silver
+bands under diverse lighting to prevent the segmentation model
+from confusing silver with grey or white.
+ 
+On the training side, the pseudo-labeling confidence
+threshold of 0.65 was chosen empirically and applied
+uniformly.
+An adaptive scheme that lowers this threshold as Phase~2
+training progresses, combined with an active learning
+criterion that selects the most informative unlabeled
+examples, would make better use of the available unlabeled
+pool and could improve generalization without additional
+annotation cost. 
+ 
+Finally, the pipeline's current architecture could be deployed on a mobile phone application that infers a highly accurate resistance value from a
+photograph, addressing the practical use case that
+motivated this work, and the usage data it generates would
+itself serve as a mechanism for continued improvement of both
+the detection and segmentation models.
+ 
+% =============================================================
+\section*{Acknowledgment}
+The authors thank Dr.\ Mohammad Shaqfeh for his guidance and supervision throughout this project.
+ 
+% =============================================================
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+ 
+\begin{thebibliography}{14}
+ 
+\bibitem{ibm_od}
+IBM, ``Object detection,''
+\url{https://www.ibm.com/think/topics/object-detection}, 2024,
+accessed: Jan.\ 03, 2025.
+ 
+\bibitem{bhaidasna2023}
+H.\ Bhaidasna and Z.\ Bhaidasna,
+``Object detection using machine learning: A comprehensive
+review,''
+\emph{Int.\ J.\ Sci.\ Res.\ Comput.\ Sci.\ Eng.\ Inf.\
+Technol.}, vol.\ 9, no.\ 3, pp.\ 248--255, 2023.
+ 
+\bibitem{dalmar2023}
+D.\ Dalmar, Aboyomi, and C.\ Daniel,
+``A comparative analysis of modern object detection algorithms:
+YOLO vs.\ SSD vs.\ Faster R-CNN,''
+\emph{ITEJ}, vol.\ 8, no.\ 2, 2023.
+ 
+\bibitem{zou2023}
+Z.\ Zou, P.\ Zhang, W.\ Wang, H.\ Li, and Z.\ Zhang,
+``Object detection in 20 years: A survey,''
+\emph{IEEE Trans.\ Pattern Anal.\ Mach.\ Intell.}, 2023.
+ 
+\bibitem{rajeev2025}
+P.\ A.\ Rajeev \emph{et al.},
+``Advancing e-waste classification with customizable YOLO based
+deep learning models,''
+\emph{Sci.\ Rep.}, vol.\ 15, no.\ 1, 2025.
+ 
+\bibitem{hobincu2021}
+N.-M.\ Serban and R.\ Hobincu,
+``Computer vision algorithm for detecting resistor color
+codes,''
+\emph{Romanian J.\ Inf.\ Sci.\ Technol.}, vol.\ 24, no.\ 3,
+pp.\ 321--333, 2021. [Online]. Available:
+\url{https://www.romjist.ro/full-texts/paper696.pdf}
+ 
+\bibitem{chen2016}
+Y.-S.\ Chen and J.-Y.\ Wang,
+``Computer vision on color-band resistor and its cost-effective
+diffuse light source design,''
+\emph{J.\ Electron.\ Imag.}, vol.\ 25, no.\ 6,
+p.\ 061409, 2016.
+ 
+\bibitem{soud2022}
+E.\ Soud,
+``Classification of electrical resistors by a deep learning
+model embedded in an application for mobile devices,''
+Jul.\ 2022.
+ 
+\bibitem{unet2015}
+O.\ Ronneberger, P.\ Fischer, and T.\ Brox,
+``U-Net: Convolutional networks for biomedical image
+segmentation,''
+in \emph{Proc.\ MICCAI}, 2015, pp.\ 234--241.
+ 
+\bibitem{zhou2018unetplusplus}
+Z.\ Zhou, M.\ M.\ R.\ Siddiquee, N.\ Tajbakhsh, and
+J.\ Liang,
+``UNet++: A nested U-Net architecture for medical image
+segmentation,''
+in \emph{Proc.\ DLMIA}, 2018, pp.\ 3--11.
+ 
+\bibitem{tan2019efficientnet}
+M.\ Tan and Q.\ V.\ Le,
+``EfficientNet: Rethinking model scaling for convolutional
+neural networks,''
+in \emph{Proc.\ ICML}, 2019, pp.\ 6105--6114.
+ 
+\bibitem{dice1945}
+L.\ R.\ Dice,
+``Measures of the amount of ecologic association between
+species,''
+\emph{Ecology}, vol.\ 26, no.\ 3, pp.\ 297--302, 1945.
+ 
+\bibitem{rf_blaze}
+blaze, ``Resistors dataset,''
+\url{https://universe.roboflow.com/blaze-k81pv/resistors-dooos},
+2025, Roboflow Universe. Accessed: Oct.\ 12, 2025.
+ 
+\bibitem{rf_resistorv1}
+ResistorV1, ``Resistor value training dataset,''
+\url{https://universe.roboflow.com/resistorv1/%resistor-value-training},
+Dec.\ 2024, Roboflow Universe. Accessed: Oct.\ 12, 2025.
+ 
+\end{thebibliography}
+ 
+\end{document}

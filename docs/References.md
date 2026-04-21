@@ -1,0 +1,106 @@
+# Band Extraction and Resistance Calculation — Reference Tables
+
+This document collects the tables describing the post-segmentation pipeline:
+error-mitigation techniques, tunable parameters, the reading-direction decision
+chain, the secondary heuristics, and the current limitations.
+
+---
+
+## Table 1 — Post-Segmentation Error-Mitigation Techniques
+
+| # | Technique | Artifact Addressed | How It Works | Stage |
+|---|-----------|--------------------|--------------|-------|
+| 1 | Two-tier area filtering | Pixel-level noise | Discards regions below a strict pixel-count threshold; uses a lenient threshold during initial extraction to preserve fragments that may merge later | Extraction |
+| 2 | Same-color fragment merging | Split bands (highlights, shadows) | Merges same-color components whose centroids are within a distance threshold using area-weighted centroid averaging | Extraction |
+| 3 | Axis-based clustering | Cross-color bleed at band boundaries | Projects all region centroids onto the resistor axis and groups regions whose projections fall within a gap threshold | Extraction |
+| 4 | Majority voting | Color confusion (brown/red, orange/gold) | Within each axis cluster, the color with the largest total pixel area wins; minority-color fragments are discarded | Extraction |
+| 5 | Dual axis estimation | Noisy centroid positions | First estimates the axis from band mask orientations via image moments, then refines it with PCA on resolved band centroids | Extraction |
+| 6 | Band count capping | Excessive false detections | Retains only the largest bands by area when more than six regions are detected | Calculation |
+| 7 | Multi-level direction heuristics | Gold band misclassification / occlusion | Cascading decision chain (Table 3) checks gold position at both ends; falls back to secondary heuristics (Table 4) that either flag boundary artifacts as errors or use band-width ratio to choose the direction | Calculation |
+| 8 | Band count adaptation | Missing or extra bands | Routes to 3-, 4-, or 5-band formulas based on detected count; assumes default tolerance for 3-band case | Calculation |
+| 9 | E24 series validation | Catch-all sanity check | Normalizes the result and compares against the E24 standard series; flags values outside the typical resistor range | Calculation |
+
+---
+
+## Table 2 — Tunable Parameters
+
+### Band Extraction
+
+| # | Parameter | Value | Module | Purpose |
+|---|-----------|-------|--------|---------|
+| 1 | `MIN_BAND_AREA` | 40 px | `band_extractor` | Minimum pixels to accept a band |
+| 2 | `MIN_BAND_AREA / 2` | 20 px | `band_extractor` | Lenient threshold for initial raw extraction |
+| 3 | `MERGE_DISTANCE_THRESHOLD` | 10.0 px | `band_extractor` | Max centroid distance to merge same-color fragments |
+| 4 | `BAND_AXIS_THRESHOLD` | 15.0 px | `band_extractor` | Max gap along axis to group regions into same band |
+
+### Band Filtering
+
+| # | Parameter | Value | Module | Purpose |
+|---|-----------|-------|--------|---------|
+| 5 | `max_bands` (overflow) | 5 | `resistance_calculator` | Cap on bands kept when > 6 detected |
+| 6 | `max_bands` (default) | 6 | `band_extractor` | Default cap in area-based filter |
+
+### Reading Direction
+
+| # | Parameter | Value | Module | Purpose |
+|---|-----------|-------|--------|---------|
+| 7 | Width ratio threshold | 0.7 | `resistance_calculator` | First band width < 70% of last ⇒ suspect reversed |
+
+### Validation
+
+| # | Parameter | Value | Module | Purpose |
+|---|-----------|-------|--------|---------|
+| 8 | `DEFAULT_TOLERANCE` | 20.0% | `color_code_tables` | Assumed tolerance when no tolerance band visible |
+| 9 | E24 mismatch threshold | 0.1 (10%) | `resistance_calculator` | Relative distance from nearest E24 value to flag warning |
+| 10 | Min reasonable value | 0.1 Ω | `resistance_calculator` | Lower bound for sanity check |
+| 11 | Max reasonable value | 100 MΩ | `resistance_calculator` | Upper bound for sanity check |
+
+### Preprocessing
+
+| # | Parameter | Value | Module | Purpose |
+|---|-----------|-------|--------|---------|
+| 12 | `img_size` | 256×256 | `run_inference` | Input image resolution to model |
+
+---
+
+## Table 3 — Reading Direction Decision Chain
+
+| Priority | Condition | Result |
+|----------|-----------|--------|
+| 1 | Gold is the last band | `forward` |
+| 2 | Gold is the first band | `reverse` |
+| 3 | Gold exists but is interior | Secondary heuristics (Table 4) |
+| 4 | No gold band found | `error_no_gold` |
+
+---
+
+## Table 4 — Secondary Direction Heuristics
+
+Triggered by Priority 3 in Table 3.
+
+| Order | Heuristic | Rationale |
+|-------|-----------|-----------|
+| 1 | **Black-edge check:** If black appears at either end of the sequence, return the `BLACK_BOUNDARY_BAND` error. | Black encodes digit 0 (invalid as the first significant digit) and is not a valid tolerance color (cannot be the last band). Reversing does not resolve either case, so black at a boundary is flagged as a segmentation artifact rather than a direction signal. |
+| 2 | **Band-width ratio:** If the first band's bounding-box width is less than 70% of the last band's width, return `reverse`. | Tolerance bands are physically thinner than digit bands. A narrow first band suggests it is the tolerance band, indicating a reversed sequence. |
+| — | *Default* | If neither heuristic triggers, return `forward`. |
+
+### Potential Improvement (not yet implemented)
+
+| Order | Heuristic | Rationale |
+|-------|-----------|-----------|
+| 3* | **Tolerance-gap:** Compare the gap between the first two bands with the gap between the last two bands (using PCA projections). If the first gap is larger, return `reverse`; if the last gap is larger, return `forward`. | On physical resistors the tolerance band is deliberately spaced further from the nearest digit band than digit bands are from each other. This geometric cue is independent of color and band width, making it more robust than the width-ratio heuristic for precision 5-band resistors. |
+
+---
+
+## Table 5 — Current Limitations
+
+| # | Limitation | Description | Impact |
+|---|------------|-------------|--------|
+| 1 | Gold-only tolerance support | Reading direction relies on locating a gold band at one end of the sequence. Silver tolerance bands are not recognized by the direction logic. | Resistors with ±10% silver tolerance return a direction error and produce no reading. |
+| 2 | Fixed axis-clustering threshold | The gap threshold for grouping regions into band axes is a single global constant (15 px at 256×256). | Resistors with unusually narrow or wide band spacing may be over-merged or under-merged. |
+| 3 | No 6-band resistor support | The calculator handles 3-, 4-, and 5-band resistors; 6-band resistors (with a temperature coefficient band) are not decoded. | The sixth band is either discarded by the cap or causes the pipeline to truncate to five bands. |
+| 4 | Single-resistor assumption | The extraction stage assumes all detected band regions belong to a single resistor. | If the mask contains bands from a second resistor or band-like background clutter, spurious bands contaminate the sequence. |
+| 5 | No confidence propagation | The extraction stage does not propagate per-pixel softmax confidence from the segmentation model. | Low-confidence pixels are treated identically to high-confidence ones during majority voting and area counting. |
+| 6 | Resolution dependence | Area and distance thresholds are tuned for 256×256 input crops and do not scale with image size. | Running on higher- or lower-resolution crops without re-tuning parameters may degrade extraction accuracy. |
+| 7 | Width-ratio heuristic fragility | The band-width ratio heuristic (Table 4, order 2) compares bounding-box widths of the first and last bands using a fixed 0.7 ratio. | Bands with similar widths (e.g., precision 5-band resistors) receive no useful signal from this heuristic. |
+| 8 | No recovery from black-edge artifacts | When black is detected at either boundary of the sequence, the pipeline returns `BLACK_BOUNDARY_BAND` (Table 4, order 1) because neither reading direction is valid. | Images where segmentation places a spurious black region at the resistor's edge produce no reading. A future improvement could attempt to drop the offending edge region and re-decode rather than failing outright. |
