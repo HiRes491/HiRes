@@ -68,29 +68,37 @@ planned improvements.
 
 | Priority | Condition | Result |
 |----------|-----------|--------|
-| 0  | Gold/silver count > 2, OR count == 2 but not adjacent at one end (i.e. not at positions [0,1] nor at [N-2, N-1]) | `error_multiple_tolerance_bands` (flagged as segmentation artifact) |
+| 0a | Black at either edge (position 0 or N-1) | `error_black_edge` (leading zero invalid as D1; black invalid as tolerance) |
+| 0b | Gold/silver count > 2, OR count == 2 not adjacent at one end (not at [0,1] or [N-2, N-1]) | `error_multiple_tolerance_bands` |
+| 0c | Gold/silver count == 1 at a strictly interior position (not in {0, 1, N-2, N-1}) | `error_interior_tolerance_band` (triggers for N ≥ 5 only) |
 | 1a | Last band is gold or silver | `forward` |
 | 1b | First band is gold or silver | `reverse` |
-| 2  | No gold/silver at either edge (and count ≤ 1 by Priority 0) | → proceed to gap heuristic (2a) |
+| 2  | No gold/silver at either edge (and Priority 0 has passed) | → proceed to gap heuristic (2a) |
 | 2a | → gap heuristic (Table 4, order 1) non-ambiguous | use returned direction |
-| 2b | → gap heuristic ambiguous | → proceed to secondary heuristics (Table 4, order 2 + default) |
-| 3  | All heuristics exhausted (default branch) | `forward` (best-effort default) |
+| 2b | → gap heuristic ambiguous | `forward` (best-effort default) |
 
-**Note on Priority 0:** Gold and silver are dual-purpose colors — both valid tolerance colors AND valid multipliers (gold ×0.1, silver ×0.01). A sub-ohm resistor legally has gold/silver at BOTH the multiplier position (N-2) and the tolerance position (N-1): e.g. `[brown, grey, gold(×0.1), gold(±5%)]` = 1.8 Ω ±5%. Priority 0 therefore permits `count == 2` when the two tolerance-colored bands are the last two positions (or the first two, if the sequence is reversed), and only flags other arrangements as impossible.
+**Notes on Priority 0:**
+
+- **0a** runs before direction determination because black at either edge is invalid in either reading direction (forward: D1=0 leading zero; reverse: black becomes tolerance, which is not a valid tolerance color). Catching it early prevents confidently-wrong readings like `[black, brown, red, gold]` decoding as 12 × 100 Ω ±5%.
+- **0b** accounts for gold/silver being dual-purpose colors (both valid tolerance AND valid multipliers: gold ×0.1, silver ×0.01). A sub-ohm resistor legally has gold/silver at BOTH Mult (N-2) and Tol (N-1) — e.g. `[brown, grey, gold(×0.1), gold(±5%)]` = 1.8 Ω ±5%. Priority 0b therefore permits `count == 2` at the last-two or first-two positions and rejects all other multi-tolerance arrangements.
+- **0c** enforces that a single gold/silver band must be at an edge (0, N-1) or a near-edge multiplier slot (1, N-2). Strictly interior positions {2, …, N-3} cannot host gold/silver on any real resistor. For 4-band sequences no position is strictly interior, so this check only activates for 5-band.
+
+There is also a post-direction validation in the 4/5-band calculators: if the resolved tolerance-position band's color is not in the IEC-valid tolerance set {brown, red, green, blue, violet, grey, gold, silver}, the calculator returns `INVALID_TOLERANCE_COLOR`.
 
 ---
 
 ## Table 4 — Secondary Direction Heuristics
 
-Order 1 is the primary heuristic, triggered by Priority 2 in Table 3 (no gold/silver at an edge). Order 2 is the fallback, triggered by Priority 2b when the gap heuristic is ambiguous. **The orders are evaluated in sequence; each order that returns a direction or error short-circuits the chain.**
+Triggered by Priority 2 in Table 3 (no gold/silver at an edge, Priority 0 has passed, so no black at an edge either).
 
 | Order | Heuristic | Rationale |
 |-------|-----------|-----------|
-| 1 | **Tolerance-gap:** Compare each end gap against `GAP_RATIO_THRESHOLD` × median interior gap (using PCA projections). If the last gap qualifies and the first does not, return `forward`; if the first qualifies and the last does not, return `reverse`; if neither qualifies, return `ambiguous` and fall to order 2. **Requires ≥4 bands** (i.e. ≥3 inter-band gaps, so that at least one interior gap exists to compute a median). With fewer than 4 bands this heuristic returns `ambiguous` unconditionally. | On physical resistors the tolerance band is deliberately spaced further from the nearest digit band than digit bands are from each other. This geometric cue is independent of color and band width, making it more robust than purely color-based heuristics. |
-| 2 | **Black-edge check:** If black appears at either end of the sequence, return the `BLACK_BOUNDARY_BAND` error. | Black encodes digit 0 (invalid as the first significant digit) and is not a valid tolerance color (cannot be the last band). Reversing does not resolve either case, so black at a boundary is flagged as a segmentation artifact rather than a direction signal. |
-| — | *Default* | If no order triggers, return `forward`. |
+| 1 | **Tolerance-gap:** Compare each end gap against `GAP_RATIO_THRESHOLD` × median interior gap (using PCA projections). If the last gap qualifies and the first does not, return `forward`; if the first qualifies and the last does not, return `reverse`; if neither qualifies, return `ambiguous`. **Requires ≥4 bands** (≥3 inter-band gaps, so that at least one interior gap exists to compute a median). With fewer than 4 bands this heuristic returns `ambiguous` unconditionally. | On physical resistors the tolerance band is deliberately spaced further from the nearest digit band than digit bands are from each other. This geometric cue is independent of color and band width, making it more robust than purely color-based heuristics. |
+| — | *Default (ambiguous)* | If the heuristic is ambiguous, return `forward` as a best-effort default. |
 
-**Removed:** A prior *band-width ratio* heuristic (return `reverse` if the first band's bounding-box width was < 70 % of the last band's) was dropped because tolerance bands are not reliably thinner than digit bands in real-world segmentations, and the heuristic produced wrong directions more often than right ones.
+**Removed heuristics:**
+- *Black-edge check* — promoted to Priority 0a (Table 3) so it runs before direction determination rather than only when the gap heuristic is ambiguous.
+- *Band-width ratio* (return `reverse` if the first band's bounding-box width was < 70 % of the last band's) — dropped because tolerance bands are not reliably thinner than digit bands in real-world segmentations, and the heuristic produced wrong directions more often than right ones.
 
 ---
 

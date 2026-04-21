@@ -297,40 +297,59 @@ def determine_reading_direction(sorted_bands: List[BandInfo]) -> str:
 
 Decision tree:
 ```
-Count of gold/silver bands:
+Priority 0a: Black at edge (position 0 or N-1)?
+        │──Yes──▶ "error_black_edge"
+        No       (invalid as leading digit; invalid as tolerance color)
+        ▼
+Priority 0b: Count of gold/silver bands:
   > 2?                          ─Yes─▶ "error_multiple_tolerance_bands"
-  = 2 and NOT adjacent at an    ─Yes─▶ "error_multiple_tolerance_bands"
-    end (positions [0,1] or            (physically impossible —
-    [N-2, N-1])?                        flagged as segmentation artifact)
-  otherwise (0, 1, or 2 at one end)
+  = 2 and NOT adjacent at one   ─Yes─▶ "error_multiple_tolerance_bands"
+    end ([0,1] or [N-2, N-1])?
+  otherwise
         │
         ▼
-Last band is gold/silver?      ─Yes──▶ "forward" ✓
+Priority 0c: Single gold/silver at strictly interior position
+             (not in {0, 1, N-2, N-1}; only applies for N ≥ 5)?
+        │──Yes──▶ "error_interior_tolerance_band"
+        No
+        ▼
+Priority 1a: Last band is gold/silver? ──Yes──▶ "forward" ✓
         │
         No
         ▼
-First band is gold/silver?     ─Yes──▶ "reverse" (flip order)
+Priority 1b: First band is gold/silver? ─Yes──▶ "reverse" (flip order)
         │
         No
         ▼
-Gap heuristic (requires ≥4 bands):
+Priority 2: Gap heuristic (requires ≥4 bands):
 end-gap ≥ 1.5 × median interior gap?
         │
     Yes (one end qualifies) ──────────▶ direction from larger end-gap
         │
     No (ambiguous, or <4 bands)
         ▼
-Apply secondary heuristics:
-  black-edge → "error_black_edge" (short-circuits)
-  else → "forward"
+Priority 2b: default "forward"
 ```
 
-**Note on Priority 0:** Gold (×0.1) and silver (×0.01) are valid multipliers in addition to being valid tolerance colors. A sub-ohm resistor legally has two gold/silver bands adjacent at one end (Mult + Tol, e.g. `[brown, grey, gold, gold]` = 1.8 Ω ±5%). The check only rejects arrangements that cannot correspond to a real resistor.
+Post-direction validation (in `calculate_4_band_resistance` and
+`calculate_5_band_resistance`): if the tolerance-position band's color is
+not in {brown, red, green, blue, violet, grey, gold, silver}, the
+calculator returns `INVALID_TOLERANCE_COLOR`. This catches cases like
+orange/yellow/white at the resolved tolerance position — these are
+never valid tolerance colors per IEC 60062.
 
-**Secondary Heuristics** (when gap heuristic is ambiguous):
-1. Black-edge check: If black appears at either end of the sorted band sequence, return the `BLACK_BOUNDARY_BAND` error — black is invalid as the first significant digit (leading zero) and is not a valid tolerance color (valid tolerance colors: gold, silver, brown, red, green, blue, violet, grey). Reversing does not fix either case, so black at a boundary is treated as a segmentation artifact.
+**Note on Priority 0b:** Gold (×0.1) and silver (×0.01) are valid multipliers
+in addition to being valid tolerance colors. A sub-ohm resistor legally has
+two gold/silver bands adjacent at one end (Mult + Tol, e.g. `[brown, grey,
+gold, gold]` = 1.8 Ω ±5%). The check only rejects arrangements that cannot
+correspond to a real resistor.
 
-(A prior band-width ratio heuristic was removed because tolerance bands are not reliably thinner than digit bands in real-world segmentations.)
+**Removed heuristics:**
+- *Band-width ratio* (`reverse` if first band's width < 70% of last's)
+  — dropped; tolerance bands are not reliably thinner than digit bands.
+- *Black-edge in secondary heuristics* — promoted to Priority 0a so it
+  runs before any direction decision rather than only after the gap
+  heuristic is ambiguous.
 
 **Calculation Formulas**:
 
@@ -513,7 +532,7 @@ python scripts/run_inference.py
 | `compute_principal_axis()` | axis_detector.py | 14 | `sort_bands_by_position()` |
 | `project_and_sort_bands()` | axis_detector.py | 84 | `sort_bands_by_position()` |
 | `determine_reading_direction()` | resistance_calculator.py | 87 | `calculate_resistance()` |
-| `apply_secondary_heuristics()` | resistance_calculator.py | 131 | `determine_reading_direction()` |
+| `detect_tolerance_side_by_gap()` | resistance_calculator.py | — | `determine_reading_direction()` |
 | `calculate_4_band_resistance()` | resistance_calculator.py | 161 | `calculate_resistance()` |
 | `calculate_5_band_resistance()` | resistance_calculator.py | 225 | `calculate_resistance()` |
 | `calculate_3_band_resistance()` | resistance_calculator.py | 281 | `calculate_resistance()` |
@@ -713,6 +732,8 @@ The projection value is a scalar representing position along the axis. Sorting b
 | `UNKNOWN_DIRECTION` | No gold/silver at an edge and gap heuristic was ambiguous | Retry with a clearer image; ensure the tolerance band is visible |
 | `BLACK_BOUNDARY_BAND` | Black band at first or last position (invalid as leading digit and as tolerance color) | Segmentation artifact — retry with better image |
 | `MULTIPLE_TOLERANCE_BANDS` | More than one gold/silver band in an impossible arrangement — count > 2, or count == 2 but not adjacent at one end (gold/silver as Mult + Tol is legal for sub-ohm resistors) | Segmentation artifact — retry with better image |
+| `INTERIOR_TOLERANCE_BAND` | A single gold/silver band detected at a strictly interior position (not at an edge or near-edge Mult slot). Only triggers for N ≥ 5. | Segmentation artifact — retry with better image |
+| `INVALID_TOLERANCE_COLOR` | Resolved tolerance-position band is not a valid IEC tolerance color (e.g. orange, yellow, white, black at the Tol slot) | Segmentation artifact — retry with better image |
 | `INVALID_COLOR` | Color not in lookup table | Check segmentation output |
 
 ### Validation
