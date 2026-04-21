@@ -63,8 +63,8 @@ Dataset/
 ├── scripts/
 │   └── run_inference.py      # Main script to run
 ├── docs/
-│   ├── LIMITATIONS.md        # Known limitations
-│   └── DOCUMENTATION.md      # Technical details
+│   ├── References.md        # Tables: error mitigation, parameters, limitations
+│   └── DOCUMENTATION.md     # Technical details
 └── README.md                 # This file
 ```
 
@@ -132,7 +132,7 @@ Dataset/
 
 - **Silver tolerance** not yet supported (only gold)
 - Requires **gold band visible** for reading direction
-- See `docs/LIMITATIONS.md` for full details
+- See `docs/References.md` (Table 5) for full details
 
 ---
 

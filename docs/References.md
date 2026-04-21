@@ -1,8 +1,9 @@
 # Band Extraction and Resistance Calculation — Reference Tables
 
-This document collects the tables describing the post-segmentation pipeline:
+This document collects the reference tables for the post-segmentation pipeline:
 error-mitigation techniques, tunable parameters, the reading-direction decision
-chain, the secondary heuristics, and the current limitations.
+chain, the secondary heuristics, current limitations, input requirements, and
+planned improvements.
 
 ---
 
@@ -104,3 +105,27 @@ Triggered by Priority 3 in Table 3.
 | 6 | Resolution dependence | Area and distance thresholds are tuned for 256×256 input crops and do not scale with image size. | Running on higher- or lower-resolution crops without re-tuning parameters may degrade extraction accuracy. |
 | 7 | Width-ratio heuristic fragility | The band-width ratio heuristic (Table 4, order 2) compares bounding-box widths of the first and last bands using a fixed 0.7 ratio. | Bands with similar widths (e.g., precision 5-band resistors) receive no useful signal from this heuristic. |
 | 8 | No recovery from black-edge artifacts | When black is detected at either boundary of the sequence, the pipeline returns `BLACK_BOUNDARY_BAND` (Table 4, order 1) because neither reading direction is valid. | Images where segmentation places a spurious black region at the resistor's edge produce no reading. A future improvement could attempt to drop the offending edge region and re-decode rather than failing outright. |
+| 9 | No SMD resistor support | The pipeline is designed for through-hole axial resistors with color bands. Surface-mount resistors use numeric codes, not colors. | SMD components in the input image cannot be decoded. |
+
+---
+
+## Input Requirements
+
+| Requirement | Expectation |
+|-------------|-------------|
+| Orientation | Any angle (horizontal, vertical, diagonal); PCA handles arbitrary orientations |
+| Visibility | All color bands clearly visible, minimal glare/reflections |
+| Contrast | Sufficient contrast between bands and resistor body |
+| Resolution | Minimum 256×256 px for the resistor crop |
+| Scene | One resistor per crop (single-resistor assumption — see Table 5, item 4) |
+
+---
+
+## Future Improvements
+
+- Silver tolerance band support (requires direction logic update and segmentation training data)
+- 6-band resistor support (temperature coefficient band)
+- Per-pixel confidence propagation from segmentation into band-level voting
+- Tolerance-gap heuristic (Table 4, order 3*) as a replacement/supplement for the width-ratio heuristic
+- Black-edge artifact recovery (drop offending region and re-decode instead of returning an error)
+- Adaptive thresholds that scale with input resolution
