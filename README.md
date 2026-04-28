@@ -212,6 +212,39 @@ If the decoded value is not an E24 preferred value, the two smallest bands are d
 
 ---
 
+## Post-Segmentation Error-Mitigation Techniques
+
+| # | Technique | Artifact Addressed | How It Works | Stage |
+|---|-----------|--------------------|--------------|-------|
+| 1 | Two-tier area filtering | Pixel-level noise | Absolute pixel-count floor drops regions below `MIN_BAND_AREA` = 40 px; relative floor drops bands below 30% of top-5 median area | Extraction |
+| 2 | Raw-vote background gap detection | Smoothing bridging physical gaps | Background bins identified from raw (unsmoothed) votes before Gaussian smoothing is applied — prevents σ=2.5 smoothing from merging adjacent bands across true gaps | Extraction |
+| 3 | Run-length minimum | Micro-fragments from noise | Contiguous runs shorter than δ = 4 bins or covering fewer than 40 pixels are discarded after RLE | Extraction |
+| 4 | LAB re-classification | Color confusion under variable lighting | When RGB image is available, each band's color is re-classified via weighted Euclidean distance in LAB space against calibrated references; outer 10% of each band excluded to avoid color bleed | Extraction |
+| 5 | LAB confidence gate | Low-confidence color assignments | Bands whose nearest LAB reference distance exceeds the confidence threshold are dropped before decoding | Extraction |
+| 6 | Band count capping | Excessive false detections | At most 5 bands retained (largest by area) when more than 5 survive filtering | Calculation |
+| 7 | Priority-0 sanity checks | Impossible segmentation arrangements | Black at either edge, multiple gold/silver in invalid positions, or single gold/silver strictly interior each return a hard error before any direction logic runs | Calculation |
+| 8 | Ratio gap heuristic | Tolerance-band localization (no gold/silver) | End gap is compared to 1.5× median interior gap; acts only when one end qualifies — returns ambiguous otherwise, defaulting to forward | Calculation |
+| 9 | VALID_TOLERANCE_COLORS check | Invalid color at resolved tolerance slot | After direction is determined, orange/yellow/white/black at the tolerance position returns `INVALID_TOLERANCE_COLOR` instead of silently using default tolerance | Calculation |
+| 10 | E24 retry | Ghost bands from over-segmentation | If decoded value is not an E24 preferred value, drops the smallest then second-smallest band and re-decodes; stops at first E24 match | Calculation |
+| 11 | Band count adaptation | Missing or extra bands | Routes to 3-, 4-, or 5-band formulas based on detected count; assumes 20% default tolerance for 3-band | Calculation |
+
+---
+
+## Secondary Direction Heuristics
+
+Triggered when no gold/silver sits at either edge and Priority 0 has passed.
+
+| Order | Heuristic | Detail |
+|-------|-----------|--------|
+| 1 | **Tolerance-gap** | Compare each end gap to `GAP_RATIO_THRESHOLD` (1.5) × median interior gap (PCA projections). If last gap qualifies and first does not → `forward`; if first qualifies and last does not → `reverse`; if both qualify → direction from larger gap; if neither qualifies → `ambiguous`. Requires ≥ 4 bands (needs ≥ 1 interior gap for median). |
+| — | *Default* | Ambiguous → `forward` |
+
+**Removed heuristics:**
+- *Band-width ratio* — `reverse` if first band width < 70% of last — dropped; tolerance bands are not reliably thinner than digit bands in real-world segmentations
+- *Black-edge secondary check* — promoted to Priority 0a so it runs before any direction logic rather than only when gap is ambiguous
+
+---
+
 ## Error Reference
 
 | Error type | Cause | Recovery |
@@ -253,5 +286,26 @@ If the decoded value is not an E24 preferred value, the two smallest bands are d
 | E24 mismatch threshold | 1% | Tolerance for E24 value matching |
 | Min reasonable value | 0.1 Ω | Sanity lower bound |
 | Max reasonable value | 100 MΩ | Sanity upper bound |
+
+---
+
+## Input Requirements
+
+| Requirement | Expectation |
+|-------------|-------------|
+| Orientation | Any angle — PCA handles arbitrary orientations |
+| Visibility | All color bands clearly visible, minimal glare/reflections |
+| Contrast | Sufficient contrast between bands and resistor body |
+| Resolution | Minimum 256×256 px for the resistor crop |
+| Scene | One resistor per crop |
+
+---
+
+## Future Improvements
+
+- 6-band resistor support (temperature coefficient band)
+- Per-pixel confidence propagation from segmentation into band-level voting
+- Black-edge artifact recovery — drop offending edge region and re-decode instead of returning `error_black_edge`
+- Adaptive thresholds that scale with input resolution
 
 
