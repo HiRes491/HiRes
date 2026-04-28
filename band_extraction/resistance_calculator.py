@@ -6,6 +6,7 @@ mask into a resistance value.
 """
 
 import numpy as np
+from statistics import median
 from typing import List, Union, Optional
 
 from color_code_tables import (
@@ -74,12 +75,15 @@ def _decode_ordered_bands(bands: List[BandInfo]) -> Union[ResistanceResult, Calc
     bands = list(bands)
 
     direction = determine_reading_direction(bands)
-    if direction == "error":
-        return CalculationError(
-            error_type="NO_TOLERANCE_BAND",
-            message="Could not determine reading direction — no recognisable tolerance band at either end.",
-            detected_bands=bands,
-        )
+    _error_map = {
+        "error":                          ("NO_TOLERANCE_BAND",           "Could not determine reading direction — no recognisable tolerance band at either end."),
+        "error_black_edge":               ("BLACK_BOUNDARY_BAND",         "Black band at a boundary position — invalid as leading digit and as tolerance color."),
+        "error_multiple_tolerance_bands": ("MULTIPLE_TOLERANCE_BANDS",    "Impossible gold/silver arrangement — likely a segmentation artifact."),
+        "error_interior_tolerance_band":  ("INTERIOR_TOLERANCE_BAND",     "Gold/silver in a strictly interior position — not valid on any real resistor."),
+    }
+    if direction in _error_map:
+        error_type, message = _error_map[direction]
+        return CalculationError(error_type=error_type, message=message, detected_bands=bands)
     if direction == "reverse":
         bands = list(reversed(bands))
 
@@ -215,6 +219,50 @@ def calculate_resistance_with_axis_info(mask: np.ndarray, image: np.ndarray = No
     return result, axis_info
 
 
+_GAP_RATIO_THRESHOLD = 1.5
+
+
+def _detect_tolerance_side_by_gap(
+    sorted_bands: List[BandInfo],
+    ratio_threshold: float = _GAP_RATIO_THRESHOLD,
+) -> str:
+    """
+    Detect reading direction by inter-band spacing.
+
+    The tolerance band is printed with a visibly wider gap from the nearest
+    digit/multiplier band than the inter-digit gaps.  Compares each end gap
+    to the median of interior gaps; only acts if the end gap exceeds
+    ratio_threshold × median — returns "ambiguous" otherwise.
+
+    Returns: "forward", "reverse", or "ambiguous"
+    """
+    centroids = np.array([b.centroid for b in sorted_bands])
+    gaps = [float(np.linalg.norm(centroids[i + 1] - centroids[i]))
+            for i in range(len(sorted_bands) - 1)]
+
+    if len(gaps) < 3:
+        return "ambiguous"
+
+    first_gap = gaps[0]
+    last_gap  = gaps[-1]
+    interior  = gaps[1:-1]
+    med_interior = median(interior)
+
+    if med_interior == 0:
+        return "ambiguous"
+
+    first_qualifies = first_gap >= ratio_threshold * med_interior
+    last_qualifies  = last_gap  >= ratio_threshold * med_interior
+
+    if last_qualifies and not first_qualifies:
+        return "forward"
+    if first_qualifies and not last_qualifies:
+        return "reverse"
+    if last_qualifies and first_qualifies:
+        return "forward" if last_gap >= first_gap else "reverse"
+    return "ambiguous"
+
+
 def determine_reading_direction(sorted_bands: List[BandInfo]) -> str:
     """
     Determine correct reading direction by locating the tolerance band at one end.
@@ -223,17 +271,46 @@ def determine_reading_direction(sorted_bands: List[BandInfo]) -> str:
     5-band resistors: tolerance can also be brown(1%), red(2%), green(0.5%),
                       blue(0.25%), violet(0.1%), grey(0.05%).
 
+    Priority 0 sanity checks run first (direction-independent):
+        0a. Black at either edge — invalid as leading digit and as tolerance.
+        0b. >2 gold/silver, or 2 gold/silver not adjacent at one end — artifact.
+        0c. Single gold/silver strictly interior (not edge/near-edge) — artifact.
+
     Returns:
-        "forward" - bands are in correct order
-        "reverse" - bands need to be reversed
-        "error"   - direction cannot be determined
+        "forward"                        - bands are in correct order
+        "reverse"                        - bands need to be reversed
+        "error"                          - direction cannot be determined
+        "error_black_edge"               - black band at a boundary position
+        "error_multiple_tolerance_bands" - impossible gold/silver arrangement
+        "error_interior_tolerance_band"  - single gold/silver strictly interior
     """
     if not sorted_bands:
         return "error"
 
+    n = len(sorted_bands)
     first_color = sorted_bands[0].color_name.lower()
     last_color  = sorted_bands[-1].color_name.lower()
-    n = len(sorted_bands)
+
+    # Priority 0a: black at either edge is invalid regardless of direction.
+    if first_color == "black" or last_color == "black":
+        return "error_black_edge"
+
+    # Priority 0b: validate gold/silver count and arrangement.
+    tol_indices = [i for i, b in enumerate(sorted_bands)
+                   if b.color_name.lower() in {"gold", "silver"}]
+    if len(tol_indices) > 2:
+        return "error_multiple_tolerance_bands"
+    if len(tol_indices) == 2:
+        valid_last_pair  = tol_indices == [n - 2, n - 1]
+        valid_first_pair = tol_indices == [0, 1]
+        if not (valid_last_pair or valid_first_pair):
+            return "error_multiple_tolerance_bands"
+
+    # Priority 0c: single gold/silver must be at an edge or near-edge slot.
+    if len(tol_indices) == 1:
+        pos = tol_indices[0]
+        if pos not in (0, 1, n - 2, n - 1):
+            return "error_interior_tolerance_band"
 
     # Gold/silver at an end is unambiguous (4-band indicator).
     first_is_4tol = first_color in {'gold', 'silver'}
@@ -246,8 +323,8 @@ def determine_reading_direction(sorted_bands: List[BandInfo]) -> str:
     if first_is_4tol and last_is_4tol:
         return "forward"
 
-    # Gold/silver somewhere in the middle but not at ends.
-    if any(b.color_name.lower() in {'gold', 'silver'} for b in sorted_bands):
+    # Gold/silver somewhere in the middle but not at ends (near-edge slot).
+    if tol_indices:
         return apply_secondary_heuristics(sorted_bands)
 
     # No gold/silver anywhere.  For 5-band resistors check whether a
@@ -263,17 +340,11 @@ def determine_reading_direction(sorted_bands: List[BandInfo]) -> str:
         if first_is_5tol and not last_is_5tol:
             return "reverse"
 
-        # Both ends are valid tolerance colors — use the gap heuristic.
-        # The tolerance band is physically separated from the digit/multiplier
-        # group by a larger gap.  Find which end has the largest inter-band gap.
-        centroids = np.array([b.centroid for b in sorted_bands])
-        gaps = [float(np.linalg.norm(centroids[i+1] - centroids[i])) for i in range(n - 1)]
-        max_gap_idx = int(np.argmax(gaps))
-        if max_gap_idx == n - 2:   # largest gap is before the last band → last is tolerance
-            return "forward"
-        if max_gap_idx == 0:       # largest gap is after the first band → first is tolerance
-            return "reverse"
-        # Gap is in the middle — fall through to secondary heuristics.
+        # Both ends are valid tolerance colors — use ratio gap heuristic.
+        gap_result = _detect_tolerance_side_by_gap(sorted_bands)
+        if gap_result != "ambiguous":
+            return gap_result
+        # Gap ambiguous — fall through to secondary heuristics.
 
     # Fall back to secondary heuristics (always returns forward/reverse).
     return apply_secondary_heuristics(sorted_bands)
@@ -310,6 +381,11 @@ def apply_secondary_heuristics(bands: List[BandInfo]) -> str:
 
     # Default to forward
     return "forward"
+
+
+VALID_TOLERANCE_COLORS = {
+    "brown", "red", "green", "blue", "violet", "grey", "gold", "silver"
+}
 
 
 def calculate_4_band_resistance(bands: List[BandInfo]) -> Union[ResistanceResult, CalculationError]:
@@ -361,6 +437,12 @@ def calculate_4_band_resistance(bands: List[BandInfo]) -> Union[ResistanceResult
         return CalculationError(
             error_type="INVALID_COLOR",
             message=f"'{color_mult}' is not a valid multiplier color for band 3",
+            detected_bands=bands
+        )
+    if color_tol not in VALID_TOLERANCE_COLORS:
+        return CalculationError(
+            error_type="INVALID_TOLERANCE_COLOR",
+            message=f"'{color_tol}' is not a valid tolerance color — likely a segmentation artifact.",
             detected_bands=bands
         )
 
@@ -433,6 +515,12 @@ def calculate_5_band_resistance(bands: List[BandInfo]) -> Union[ResistanceResult
         return CalculationError(
             error_type="INVALID_COLOR",
             message=f"'{color_mult}' is not a valid multiplier color for band 4",
+            detected_bands=bands
+        )
+    if color_tol not in VALID_TOLERANCE_COLORS:
+        return CalculationError(
+            error_type="INVALID_TOLERANCE_COLOR",
+            message=f"'{color_tol}' is not a valid tolerance color — likely a segmentation artifact.",
             detected_bands=bands
         )
 
