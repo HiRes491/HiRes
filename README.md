@@ -138,14 +138,40 @@ python eval_per_class_iou.py --encoder efficientnet-b2 \
 
 ## Band Extraction
 
-1. Segmentation mask → connected components per color class
-2. Noise filter: drops regions below pixel floor or below 15% of median band area
-3. Fragment merge: nearby same-color components merged into one band
-4. PCA on band centroids → principal axis
-5. Project centroids onto axis → sort left-to-right
-6. **Direction heuristic:**
-   - 4-band: gold/silver position determines tolerance end
-   - 5-band ambiguous: largest inter-band gap → tolerance band is on that side
+1. PCA on all non-background pixel positions → unit axis vector **â** and centroid origin **o**
+2. Project every pixel: `t_i = (p_i − o) · â`
+3. Discretize into N = 200 uniform bins; accumulate per-class vote histogram V ∈ ℝ^{200×13}
+4. Gaussian-smooth each class curve (σ = 2.5 bins) to fill intra-band gaps
+5. Assign dominant class per bin: `ĉ[b] = argmax_{c≥1} Ṽ[b,c]`; background bins identified from raw unsmoothed votes to preserve physical gaps between bands
+6. Run-length encode dominant-class signal; keep runs spanning ≥ δ = 4 bins and ≥ 40 pixels
+7. *(Optional — when RGB available)* Refine each band's color via weighted LAB distance to calibrated references; drop bands exceeding the confidence threshold
+
+### Post-extraction filtering
+
+- Absolute floor: drop bands below `MIN_BAND_AREA` = 40 px
+- Relative floor: drop bands below 30% of median area of top-5 bands
+- Hard cap: retain at most 5 bands (largest by area)
+
+### Reading Direction
+
+Priority cascade (runs in order, first match wins):
+
+| Priority | Condition | Result |
+|----------|-----------|--------|
+| 0a | Black at either edge (position 0 or N-1) | `error_black_edge` — invalid as leading digit and as tolerance |
+| 0b | Gold/silver count > 2, or count == 2 not adjacent at one end | `error_multiple_tolerance_bands` |
+| 0c | Single gold/silver at strictly interior position (N ≥ 5 only) | `error_interior_tolerance_band` |
+| 1a | Last band is gold or silver | `forward` |
+| 1b | First band is gold or silver | `reverse` |
+| 2 | 5-band: known tolerance color at one end only | `forward` / `reverse` |
+| 2a | Gap heuristic: end gap ≥ 1.5 × median interior gap | direction from larger qualifying end |
+| 2b | Ambiguous | `forward` (default) |
+
+Post-direction: if the resolved tolerance-position color is not in {brown, red, green, blue, violet, grey, gold, silver} → `INVALID_TOLERANCE_COLOR`.
+
+### E24 Retry
+
+If the decoded value is not an E24 preferred value, the two smallest bands are dropped in turn and re-decoded. Catches ghost bands from over-segmentation.
 
 ---
 
@@ -180,6 +206,52 @@ python eval_per_class_iou.py --encoder efficientnet-b2 \
 - 6-band resistors not supported
 - SMD (surface-mount) resistors not supported
 - Grey and silver are hardest to segment (IoU 0.564 / 0.660)
-- 1MΩ 5-band resistors are the most common failure case
+- 1 MΩ 5-band resistors are the most common failure case
+- Area and gap thresholds are tuned for the model's output resolution; re-tuning needed for different crop sizes
+- No black-edge artifact recovery — returns `error_black_edge` rather than attempting to drop the offending band and re-decode
+
+---
+
+## Error Reference
+
+| Error type | Cause | Recovery |
+|------------|-------|----------|
+| `INSUFFICIENT_BANDS` | Fewer than 3 bands survive filtering | Improve image quality / lighting |
+| `error_black_edge` | Black at position 0 or N-1 (invalid as D1 or tolerance) | Segmentation artifact — retry |
+| `error_multiple_tolerance_bands` | >2 gold/silver, or 2 not adjacent at one end | Segmentation artifact — retry |
+| `error_interior_tolerance_band` | Single gold/silver at a strictly interior slot | Segmentation artifact — retry |
+| `INVALID_TOLERANCE_COLOR` | Resolved tolerance band is orange/yellow/white/etc. | Segmentation artifact — retry |
+| `UNKNOWN_DIRECTION` | Direction undetermined after full cascade | Retry with clearer image |
+| `INVALID_COLOR` | Color not in lookup table | Check segmentation output |
+
+---
+
+## Tunable Parameters
+
+### Band Extraction
+
+| Parameter | Value | Purpose |
+|-----------|-------|---------|
+| `MIN_BAND_AREA` | 40 px | Absolute pixel floor per band |
+| Histogram bins N | 200 | Projection resolution |
+| Gaussian σ | 2.5 bins | Smoothing to fill intra-band gaps |
+| Min run length δ | 4 bins | Minimum contiguous run to keep |
+| Relative area floor | 30% of top-5 median | Drops small spurious fragments |
+| Band cap | 5 | Max bands retained |
+
+### Reading Direction
+
+| Parameter | Value | Purpose |
+|-----------|-------|---------|
+| `GAP_RATIO_THRESHOLD` | 1.5 | End gap must exceed 1.5× median interior gap to qualify |
+
+### Validation
+
+| Parameter | Value | Purpose |
+|-----------|-------|---------|
+| `DEFAULT_TOLERANCE` | 20% | Assumed tolerance for 3-band resistors |
+| E24 mismatch threshold | 1% | Tolerance for E24 value matching |
+| Min reasonable value | 0.1 Ω | Sanity lower bound |
+| Max reasonable value | 100 MΩ | Sanity upper bound |
 
 
