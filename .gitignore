@@ -27,5 +27,3 @@ segmentation/checkpoints/
 datasets/
 testing/
 
-# Weights (too large for GitHub)
-weights/

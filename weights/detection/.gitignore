@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.env
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Large binary / archive files that exceed GitHub's 100 MB limit
+band_extraction/archive/
+band_extraction/models/
+band_extraction/data/
+
+# Model checkpoints and weights (too large for GitHub)
+*.pth
+segmentation/checkpoints/
+!segmentation/checkpoints/efficientnet-b2_best.pt
+
+.DS_Store
+
+# Datasets and test images (too large for GitHub)
+datasets/
+testing/
+
+# Weights (too large for GitHub)
+weights/
