@@ -106,67 +106,6 @@ def _decode_ordered_bands(bands: List[BandInfo]) -> Union[ResistanceResult, Calc
         return calculate_5_band_resistance(bands[:5])
 
 
-def calculate_resistance(mask: np.ndarray, image: np.ndarray = None) -> Union[ResistanceResult, CalculationError]:
-    """
-    Main entry point: Calculate resistance value from a segmentation mask.
-
-    Pipeline:
-    1. Extract color bands via 1D projection
-    2. Filter noise (area floor + relative floor)
-    3. Decode (direction → strip → calculate)
-    4. E24 retry: if result is non-E24, try dropping the smallest band and
-       re-decoding — catches hallucinated ghost bands that inflate band count.
-
-    Args:
-        mask: 2D numpy array (H, W) with class IDs (0-12)
-
-    Returns:
-        ResistanceResult on success, CalculationError on failure
-    """
-    import statistics
-
-    bands, _ = extract_bands_by_projection(mask, image_rgb=None)
-
-    # Filter noise: absolute floor + relative floor (≥30% of top-5 median)
-    if bands:
-        top_areas = sorted((b.area for b in bands), reverse=True)[:5]
-        ref_area = statistics.median(top_areas)
-        bands = [b for b in bands if b.area >= MIN_BAND_AREA and b.area >= 0.30 * ref_area]
-
-    bands = [b for b in bands if b.color_name != "unknown"]
-
-    if len(bands) < 3:
-        return CalculationError(
-            error_type="INSUFFICIENT_BANDS",
-            message=f"Need at least 3 bands, found {len(bands)}",
-            detected_bands=bands,
-        )
-
-    # Hard cap: keep at most 5 bands (largest by area)
-    if len(bands) > 5:
-        bands = filter_bands_by_area(bands, max_bands=5)
-
-    sorted_bands = bands  # already position-ordered by projection
-
-    # Primary decode
-    result = _decode_ordered_bands(sorted_bands)
-
-    # E24 retry — if the primary result is not a preferred value, a ghost band
-    # is likely inflating the count.  Try dropping the smallest band (ghost
-    # bands are almost always the smallest) and re-decode.
-    if isinstance(result, ResistanceResult) and not _is_e24(result.value) and len(sorted_bands) > 3:
-        area_asc = sorted(range(len(sorted_bands)), key=lambda i: sorted_bands[i].area)
-        for drop_i in area_asc[:2]:   # try dropping the 1st or 2nd smallest
-            candidate = [b for j, b in enumerate(sorted_bands) if j != drop_i]
-            alt = _decode_ordered_bands(candidate)
-            if isinstance(alt, ResistanceResult) and _is_e24(alt.value):
-                result = alt
-                sorted_bands = candidate
-                break
-
-    return _inject_confidence(result, _compute_axis_confidence(sorted_bands), _compute_area_confidence(mask, bands))
-
-
 def calculate_resistance_with_axis_info(mask: np.ndarray, image: np.ndarray = None) -> tuple:
     """
     Calculate resistance and return axis visualization info.
@@ -344,7 +283,15 @@ def determine_reading_direction(sorted_bands: List[BandInfo]) -> str:
         gap_result = _detect_tolerance_side_by_gap(sorted_bands)
         if gap_result != "ambiguous":
             return gap_result
-        # Gap ambiguous — fall through to secondary heuristics.
+        # Ratio ambiguous — fall back to argmax gap (original heuristic).
+        centroids = np.array([b.centroid for b in sorted_bands])
+        gaps = [float(np.linalg.norm(centroids[i + 1] - centroids[i])) for i in range(n - 1)]
+        max_gap_idx = int(np.argmax(gaps))
+        if max_gap_idx == n - 2:
+            return "forward"
+        if max_gap_idx == 0:
+            return "reverse"
+        # Max gap in the interior — fall through to secondary heuristics.
 
     # Fall back to secondary heuristics (always returns forward/reverse).
     return apply_secondary_heuristics(sorted_bands)

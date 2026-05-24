@@ -37,9 +37,9 @@ PANEL_H = 300
 GAP_PX  = 8
 
 _COLOR_HEX = {
-    'black':'#1a1a1a','blue':'#004aad','brown':'#5e3831','gold':'#ebbf7c',
-    'green':'#00bf63','grey':'#585a59','orange':'#ff914d','violet':'#9417eb',
-    'red':'#e43232','silver':'#c0c0c0','white':'#f5f5f5','yellow':'#f4cb24',
+    'black':'#000000','blue':'#004aad','brown':'#5e3831','gold':'#ebbf7c',
+    'green':'#00bf63','grey':'#585a59','orange':'#ff914d','violet':'#5e17eb',
+    'red':'#e43232','silver':'#cdcdcd','white':'#ffffff','yellow':'#f4cb24',
 }
 
 
@@ -142,8 +142,8 @@ def _make_composite(img_np, crop_np, vis, bands, axis_info,
     p1_w   = p1.shape[1]
     p3_off = p1_w + GAP_PX + p2.shape[1] + GAP_PX
 
-    # Value label across top of panel 3
-    label    = f'{value_str}  {tol_str}'
+    # Value label across top of panel 3 — strip Unicode for Hershey font
+    label    = f'{value_str}  {tol_str}'.replace('Ω', 'Ohm').replace('±', '+/-')
     row_bgr  = cv2.cvtColor(row, cv2.COLOR_RGB2BGR)
     _badge(row_bgr, p3_off + 4, PANEL_H, label, font_scale=0.55, color=(0, 180, 0))
     row = cv2.cvtColor(row_bgr, cv2.COLOR_BGR2RGB)

@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 1
+names: ['resistor']
+
+roboflow:
+  workspace: 491-resistor-classification
+  project: resistor_detection_combined_with_ceramic_caps
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/491-resistor-classification/resistor_detection_combined_with_ceramic_caps/dataset/1

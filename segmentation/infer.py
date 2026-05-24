@@ -92,9 +92,11 @@ def _run_pass(model, img_np: np.ndarray, transform, device: torch.device,
         logits = model(img_tensor)
     probs = F.softmax(logits, dim=1)
     max_probs = probs.max(dim=1)[0][0].cpu().numpy()
-    seg_confidence = float(max_probs[pad_y:pad_y + new_h, pad_x:pad_x + new_w].mean())
     pred = logits.argmax(dim=1)[0].cpu().numpy().astype(np.uint8)
     pred_unpad = pred[pad_y:pad_y + new_h, pad_x:pad_x + new_w]
+    unpad_max_probs = max_probs[pad_y:pad_y + new_h, pad_x:pad_x + new_w]
+    nonbg = pred_unpad > 0
+    seg_confidence = float(unpad_max_probs[nonbg].mean()) if nonbg.any() else float(unpad_max_probs.mean())
     mask = np.array(Image.fromarray(pred_unpad).resize((w, h), Image.NEAREST))
     return mask, seg_confidence
 
