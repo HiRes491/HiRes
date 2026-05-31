@@ -2,7 +2,7 @@
 
 This repo contains the code for our paper **HiRes: A Hierarchical Cascaded Method for Resistor Value Identification**
 <p align="center">
-<img width="654" height="375" alt="Screenshot 2026-05-31 at 6 03 21 PM" src="https://github.com/user-attachments/assets/5d67153a-6064-460b-b46d-6d360e59be0e" />
+    <img width="3240" height="2209" alt="overview (1)" src="https://github.com/user-attachments/assets/8633de36-97ef-44ae-963d-0ed5a5564eba" />
 </p>  
 
 ## Installation 
