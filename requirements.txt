@@ -1,0 +1,10 @@
+torch>=2.1.0
+torchvision>=0.16.0
+numpy>=1.23.0
+scipy>=1.10.0
+pillow>=9.0.0
+opencv-python>=4.8.0
+albumentations>=2.0.0
+segmentation-models-pytorch>=0.3.4
+ultralytics>=8.0.0
+tqdm>=4.60.0
