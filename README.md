@@ -57,4 +57,4 @@ python pipeline.py path/to/image.jpg \
     --det_weights weights/detection/best.pt \
     --seg_weights weights/segmentation/efficientnet-b2_best.pt \
     --output_dir results/pipeline_output
-```<img width="660" height="361" alt="Screenshot 2026-05-31 at 6 02 50 PM" src="https://github.com/user-attachments/assets/6322c15e-a8a1-4c60-8580-d97578b59a8e" />
+```
